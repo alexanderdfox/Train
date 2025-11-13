@@ -245,6 +245,16 @@ body::before {
     gap: 22px;
 }
 
+.tab-panel {
+    display: none;
+    width: 100%;
+    animation: tabFade 0.3s ease;
+}
+
+.tab-panel.is-active {
+    display: block;
+}
+
 .tab-bar {
     display: flex;
     flex-wrap: wrap;
@@ -713,6 +723,36 @@ button:focus-visible {
     border-radius: 12px;
     background: rgba(10, 18, 36, 0.72);
     border: 1px solid rgba(109, 248, 255, 0.18);
+}
+
+.cross-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    background: rgba(109, 248, 255, 0.22);
+    position: relative;
+    color: var(--accent-strong);
+}
+
+.cross-icon::before,
+.cross-icon::after {
+    content: "";
+    position: absolute;
+    background: currentColor;
+    border-radius: 2px;
+}
+
+.cross-icon::before {
+    width: 12px;
+    height: 2px;
+}
+
+.cross-icon::after {
+    width: 2px;
+    height: 12px;
 }
 
 .viewport-controls {

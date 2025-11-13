@@ -5,6 +5,95 @@ const MAX_TRAINS = 1000;
 const TRACK_PADDING_X = 80;
 const VIEWBOX_WIDTH = 1200;
 const TRACK_VIEW_WIDTH = VIEWBOX_WIDTH - TRACK_PADDING_X * 2;
+const DEFAULT_VERTICAL_MIN = 70;
+const DEFAULT_VERTICAL_MAX = 220;
+const DEFAULT_DIAGONAL_TOP = 90;
+const DEFAULT_DIAGONAL_BOTTOM = 210;
+const DEFAULT_PATH_DEFINITIONS = [
+    {
+        id: "east-west",
+        label: "East–West",
+        shortLabel: "E/W",
+        stroke: "rgba(109, 248, 255, 0.82)",
+        width: 6,
+        computePoint: ratio => ({
+            x: TRACK_PADDING_X + ratio * TRACK_VIEW_WIDTH,
+            y: 150
+        })
+    },
+    {
+        id: "north-south",
+        label: "North–South",
+        shortLabel: "N/S",
+        stroke: "rgba(99, 242, 210, 0.75)",
+        width: 5,
+        computePoint: ratio => ({
+            x: TRACK_PADDING_X + TRACK_VIEW_WIDTH / 2,
+            y: DEFAULT_VERTICAL_MIN + ratio * (DEFAULT_VERTICAL_MAX - DEFAULT_VERTICAL_MIN)
+        })
+    },
+    {
+        id: "diagonal-ne",
+        label: "Diagonal NE",
+        shortLabel: "Diag NE",
+        stroke: "rgba(255, 146, 108, 0.7)",
+        width: 5,
+        computePoint: ratio => ({
+            x: TRACK_PADDING_X + ratio * TRACK_VIEW_WIDTH,
+            y: DEFAULT_DIAGONAL_BOTTOM - ratio * (DEFAULT_DIAGONAL_BOTTOM - DEFAULT_DIAGONAL_TOP)
+        })
+    },
+    {
+        id: "diagonal-se",
+        label: "Diagonal SE",
+        shortLabel: "Diag SE",
+        stroke: "rgba(147, 197, 253, 0.68)",
+        width: 5,
+        computePoint: ratio => ({
+            x: TRACK_PADDING_X + ratio * TRACK_VIEW_WIDTH,
+            y: DEFAULT_DIAGONAL_TOP + ratio * (DEFAULT_DIAGONAL_BOTTOM - DEFAULT_DIAGONAL_TOP)
+        })
+    }
+];
+
+const getFallbackPathPoint = (pathIndex, ratio) => {
+    const definition = DEFAULT_PATH_DEFINITIONS[pathIndex] || DEFAULT_PATH_DEFINITIONS[0];
+    const clamped = Math.min(Math.max(ratio, 0), 1);
+    return definition.computePoint(clamped);
+};
+
+const projectOntoSegment = (startPoint, endPoint, targetPoint) => {
+    const dx = endPoint.x - startPoint.x;
+    const dy = endPoint.y - startPoint.y;
+    const lengthSq = dx * dx + dy * dy || 1;
+    const t = ((targetPoint.x - startPoint.x) * dx + (targetPoint.y - startPoint.y) * dy) / lengthSq;
+    const ratio = Math.min(Math.max(t, 0), 1);
+    const projectionX = startPoint.x + dx * ratio;
+    const projectionY = startPoint.y + dy * ratio;
+    const distX = targetPoint.x - projectionX;
+    const distY = targetPoint.y - projectionY;
+    return {
+        ratio,
+        distanceSq: distX * distX + distY * distY
+    };
+};
+
+const projectPointToFallbackPaths = point => {
+    let best = null;
+    DEFAULT_PATH_DEFINITIONS.forEach((pathDef, idx) => {
+        const start = pathDef.computePoint(0);
+        const end = pathDef.computePoint(1);
+        const projection = projectOntoSegment(start, end, point);
+        if (!best || projection.distanceSq < best.distanceSq) {
+            best = {
+                pathIndex: idx,
+                ratio: projection.ratio,
+                distanceSq: projection.distanceSq
+            };
+        }
+    });
+    return best;
+};
 const DEFAULT_STATIONS = {
     start: "Origin Terminal",
     end: "Summit Station"
@@ -82,7 +171,8 @@ let stationNodes = [];
 let trackLengthKm = DEFAULT_TRACK_LENGTH;
 let crossingState = DEFAULT_CROSSINGS.map((km, index) => ({
     ratio: km / DEFAULT_TRACK_LENGTH,
-    label: `Crossing ${index + 1}`
+    label: `Crossing ${index + 1}`,
+    pathIndex: 0
 }));
 let crossings = [];
 let trains = [];
@@ -250,6 +340,7 @@ const collectStationNodesFromMap = () => {
             name,
             km,
             point,
+            pathIndex: Number.isFinite(point?.pathIndex) ? point.pathIndex : 0,
             source: "map",
             element: el
         });
@@ -267,12 +358,16 @@ const mergeStationNodes = (mapStations = []) => {
         const km = clampDistance(Number(node.km) || 0);
         const normalizedName = (node.name || "Station").trim() || "Station";
         const id = node.id || makeStationNodeId(normalizedName, km);
+        const basePathIndex = Number.isFinite(node.pathIndex) ? node.pathIndex : 0;
+        const point = node.point || getTrackPoint(km, 0, basePathIndex);
+        const resolvedPathIndex = Number.isFinite(point?.pathIndex) ? point.pathIndex : basePathIndex;
         unique.set(id, {
             id,
             name: normalizedName,
             km,
-            point: node.point || getTrackPoint(km, 0),
-            source: node.source || "map"
+            point,
+            source: node.source || "map",
+            pathIndex: resolvedPathIndex
         });
     };
 
@@ -281,7 +376,7 @@ const mergeStationNodes = (mapStations = []) => {
         addEntry({
             ...node,
             source: "custom",
-            point: getTrackPoint(node.km, 0)
+            point: getTrackPoint(node.km, 0, node.pathIndex)
         })
     );
 
@@ -356,6 +451,8 @@ const addCustomStationNode = (name, km) => {
         id,
         name: normalizedName,
         km: normalizedKm,
+        point: getTrackPoint(normalizedKm, 0, 0),
+        pathIndex: 0,
         source: "custom"
     };
     customStationNodes.push(node);
@@ -398,7 +495,8 @@ const handleStationListInput = event => {
     } else if (field === "km") {
         const km = clampDistance(Number(target.value) || 0);
         node.km = km;
-        node.point = getTrackPoint(km, 0);
+        node.point = getTrackPoint(km, 0, node.pathIndex);
+        node.pathIndex = Number.isFinite(node.point?.pathIndex) ? node.point.pathIndex : node.pathIndex || 0;
         target.value = km.toFixed(1);
     }
 
@@ -439,14 +537,23 @@ const makeStartNodeId = (name, km) => {
 const addStartNode = (name, km, point) => {
     const normalizedName = (name || "Start Node").trim() || "Start Node";
     const normalizedKm = clampDistance(Number.isFinite(km) ? km : 0);
-    const id = makeStartNodeId(normalizedName, normalizedKm);
     const nodePoint = point || getTrackPoint(normalizedKm, 0);
+    const pathIndex = Number.isFinite(nodePoint?.pathIndex) ? nodePoint.pathIndex : 0;
+    let id = makeStartNodeId(normalizedName, normalizedKm);
+    if (
+        startNodes.some(
+            node => node.id === id && Number.isFinite(node.pathIndex) && node.pathIndex !== pathIndex
+        )
+    ) {
+        id = id + "|p" + pathIndex;
+    }
     const existingIndex = startNodes.findIndex(node => node.id === id);
     const node = {
         id,
         name: normalizedName,
         km: normalizedKm,
-        point: nodePoint
+        point: nodePoint,
+        pathIndex
     };
     if (existingIndex >= 0) {
         startNodes[existingIndex] = node;
@@ -462,7 +569,8 @@ const finalizeStartNodes = () => {
     scenarioStartNodeFallback = startNodes.map(node => ({
         id: node.id,
         name: node.name,
-        km: node.km
+        km: node.km,
+        pathIndex: Number.isFinite(node.pathIndex) ? node.pathIndex : 0
     }));
 };
 
@@ -507,8 +615,29 @@ const refreshStartNodeSelectOptions = () => {
 const collectStartNodes = () => {
     startNodes.length = 0;
 
-    addStartNode(stationNames.start || "Origin", 0, getTrackPoint(0, 0));
-    addStartNode(stationNames.end || "Destination", trackLengthKm, getTrackPoint(trackLengthKm, 0));
+    if (usingCustomTrackPath && trackPathElements.length) {
+        trackPathElements.forEach((_, idx) => {
+            const startLabel =
+                idx === 0 ? stationNames.start || "Origin" : `${stationNames.start} (Path ${idx + 1})`;
+            const endLabel =
+                idx === 0 ? stationNames.end || "Destination" : `${stationNames.end} (Path ${idx + 1})`;
+            addStartNode(startLabel, 0, getTrackPoint(0, 0, idx));
+            addStartNode(endLabel, trackLengthKm, getTrackPoint(trackLengthKm, 0, idx));
+        });
+    } else {
+        DEFAULT_PATH_DEFINITIONS.forEach((pathDef, idx) => {
+            addStartNode(
+                `${stationNames.start} (${pathDef.shortLabel})`,
+                0,
+                getTrackPoint(0, 0, idx)
+            );
+            addStartNode(
+                `${stationNames.end} (${pathDef.shortLabel})`,
+                trackLengthKm,
+                getTrackPoint(trackLengthKm, 0, idx)
+            );
+        });
+    }
 
     stationNodes.forEach(node => {
         if (!node) {
@@ -517,11 +646,11 @@ const collectStartNodes = () => {
         if (node.km <= 0.001 || Math.abs(node.km - trackLengthKm) <= 0.001) {
             return;
         }
-        addStartNode(node.name, node.km, node.point || getTrackPoint(node.km, 0));
+        addStartNode(node.name, node.km, node.point || getTrackPoint(node.km, 0, node.pathIndex));
     });
 
     crossings.forEach((crossing, index) => {
-        const point = getTrackPoint(crossing.km, 0);
+        const point = getTrackPoint(crossing.km, 0, crossing.pathIndex);
         addStartNode(crossing.label || "Crossing " + (index + 1), crossing.km, point);
     });
 
@@ -530,7 +659,12 @@ const collectStartNodes = () => {
             if (!node) {
                 return;
             }
-            addStartNode(node.name || "Start Node", node.km ?? 0);
+            const kmValue = node.km ?? 0;
+            addStartNode(
+                node.name || "Start Node",
+                kmValue,
+                getTrackPoint(kmValue, 0, node.pathIndex)
+            );
         });
     }
 
@@ -557,6 +691,7 @@ const applyStartNodesSequentially = nodeIds => {
             index = trains.length - 1;
         }
         trains[index].startNodeId = nodeId;
+        trains[index].pathIndex = Number.isFinite(node.pathIndex) ? node.pathIndex : 0;
         index += 1;
     });
     syncStartNodeSelections();
@@ -570,6 +705,7 @@ const clearActiveTrainStartNode = () => {
     const index = Number.isFinite(activeTrainIndex) ? activeTrainIndex : 0;
     if (trains[index]) {
         trains[index].startNodeId = null;
+        trains[index].pathIndex = 0;
     }
     syncStartNodeSelections();
     render();
@@ -843,24 +979,45 @@ const transformPathPoint = (point, element) => {
     return { x, y };
 };
 
-const getTrackPoint = (distanceKm, laneIndex = 0) => {
+const getTrackPoint = (distanceKm, laneIndex = 0, pathIndexOverride = null) => {
     const clampedDistance = clampDistance(distanceKm);
     const ratio = trackLengthKm > 0 ? clampedDistance / trackLengthKm : 0;
     const clampedRatio = Math.min(Math.max(ratio, 0), 1);
 
-    if (usingCustomTrackPath && trackPathElement && trackPathLength > 0) {
-        const lengthAlongPath = clampedRatio * trackPathLength;
-        const rawPoint = trackPathElement.getPointAtLength(lengthAlongPath);
-        const { x, y } = transformPathPoint(rawPoint, trackPathElement);
-        return { x, y, ratio: clampedRatio };
+    if (usingCustomTrackPath && trackPathElements.length) {
+        const pathObj = trackPathElements[pathIndexOverride ?? 0] || trackPathElements[0];
+        if (pathObj && pathObj.element && pathObj.length > 0) {
+            const lengthAlongPath = Math.min(Math.max(clampedRatio * pathObj.length, 0), pathObj.length);
+            const rawPoint = pathObj.element.getPointAtLength(lengthAlongPath);
+            const { x, y } = transformPathPoint(rawPoint, pathObj.element);
+            return { x, y, ratio: clampedRatio, pathIndex: trackPathElements.indexOf(pathObj) };
+        }
     }
 
-    const minY = 70;
-    const maxY = 220;
-    const laneSpacing = trains.length > 1 ? (maxY - minY) / (trains.length - 1) : 0;
-    const x = TRACK_PADDING_X + clampedRatio * TRACK_VIEW_WIDTH;
-    const y = minY + laneIndex * laneSpacing;
-    return { x, y, ratio: clampedRatio };
+    const fallbackPathIndex = Number.isFinite(pathIndexOverride) ? pathIndexOverride : 0;
+    const basePoint = getFallbackPathPoint(fallbackPathIndex, clampedRatio);
+    let { x, y } = basePoint;
+
+    if (fallbackPathIndex === 0) {
+        const laneOffset = trains.length > 1
+            ? 16 * (laneIndex - (trains.length - 1) / 2)
+            : 0;
+        y += laneOffset;
+    } else if (fallbackPathIndex === 1) {
+        const lateralOffset = trains.length > 1
+            ? 12 * (laneIndex - (trains.length - 1) / 2)
+            : 0;
+        x += lateralOffset;
+    } else {
+        const offset = trains.length > 1
+            ? 10 * (laneIndex - (trains.length - 1) / 2)
+            : 0;
+        const angle = fallbackPathIndex === 2 ? -Math.PI / 4 : Math.PI / 4;
+        x += Math.cos(angle + Math.PI / 2) * offset;
+        y += Math.sin(angle + Math.PI / 2) * offset;
+    }
+
+    return { x, y, ratio: clampedRatio, pathIndex: fallbackPathIndex };
 };
 
 const projectPointToSinglePath = (pathObj, point) => {
@@ -963,16 +1120,19 @@ const recalcCrossings = () => {
         .map(state => {
             const km = clampDistance(state.ratio * trackLengthKm);
             const ratio = trackLengthKm > 0 ? km / trackLengthKm : 0;
+            const pathIndex = Number.isFinite(state.pathIndex) ? state.pathIndex : 0;
             return {
                 ratio,
-                label: state.label || "Crossing"
+                label: state.label || "Crossing",
+                pathIndex
             };
         })
         .sort((a, b) => a.ratio - b.ratio);
 
     crossings = crossingState.map(state => ({
         km: state.ratio * trackLengthKm,
-        label: state.label
+        label: state.label,
+        pathIndex: Number.isFinite(state.pathIndex) ? state.pathIndex : 0
     }));
 
     collectStartNodes();
@@ -981,7 +1141,8 @@ const recalcCrossings = () => {
 const resetCrossingsToDefault = () => {
     crossingState = DEFAULT_CROSSINGS.map((km, index) => ({
         ratio: km / DEFAULT_TRACK_LENGTH,
-        label: `Crossing ${index + 1}`
+        label: `Crossing ${index + 1}`,
+        pathIndex: 0
     }));
     recalcCrossings();
     renderCrossingControls();
@@ -1007,6 +1168,55 @@ const deriveCrossingRatiosFromSvg = svg => {
             return [];
         }
 
+        const projected = candidates
+            .map(el => {
+                let bbox;
+                try {
+                    bbox = el.getBBox();
+                } catch (error) {
+                    return null;
+                }
+                if (!bbox || (bbox.width === 0 && bbox.height === 0)) {
+                    return null;
+                }
+                const centerPoint = transformPathPoint(
+                    {
+                        x: bbox.x + bbox.width / 2,
+                        y: bbox.y + bbox.height / 2
+                    },
+                    el
+                );
+                const projection = projectPointToTrackPath(centerPoint);
+                if (!projection) {
+                    return null;
+                }
+                const ratio = trackLengthKm > 0 ? projection.km / trackLengthKm : 0;
+                return {
+                    ratio: Math.min(Math.max(ratio, 0), 1),
+                    pathIndex: projection.pathIndex
+                };
+            })
+            .filter(Boolean);
+
+        if (projected.length) {
+            const uniques = [];
+            projected
+                .sort((a, b) => a.ratio - b.ratio)
+                .forEach(entry => {
+                    if (
+                        !uniques.some(
+                            existing =>
+                                existing.pathIndex === entry.pathIndex &&
+                                Math.abs(existing.ratio - entry.ratio) < 0.01
+                        )
+                    ) {
+                        uniques.push(entry);
+                    }
+                });
+            return uniques;
+        }
+
+        // Fallback to width-based distribution if projection fails.
         const viewBox = svg.viewBox && svg.viewBox.baseVal;
         const width = viewBox && viewBox.width
             ? viewBox.width
@@ -1017,26 +1227,33 @@ const deriveCrossingRatiosFromSvg = svg => {
             return [];
         }
 
-        const ratios = candidates.map(el => {
-            const bbox = el.getBBox();
-            if (!bbox || (bbox.width === 0 && bbox.height === 0)) {
-                return null;
-            }
-            const centerX = bbox.x + bbox.width / 2;
-            const normalized = (centerX - offsetX) / width;
-            if (!Number.isFinite(normalized)) {
-                return null;
-            }
-            return Math.min(Math.max(normalized, 0), 1);
-        }).filter(value => value != null);
+        const ratios = candidates
+            .map(el => {
+                const bbox = el.getBBox();
+                if (!bbox || (bbox.width === 0 && bbox.height === 0)) {
+                    return null;
+                }
+                const centerX = bbox.x + bbox.width / 2;
+                const normalized = (centerX - offsetX) / width;
+                if (!Number.isFinite(normalized)) {
+                    return null;
+                }
+                return Math.min(Math.max(normalized, 0), 1);
+            })
+            .filter(value => value != null);
 
-        const unique = [];
-        ratios.sort((a, b) => a - b).forEach(value => {
-            if (!unique.some(existing => Math.abs(existing - value) < 0.01)) {
-                unique.push(value);
-            }
-        });
-        return unique;
+        const uniqueRatios = [];
+        ratios
+            .sort((a, b) => a - b)
+            .forEach(value => {
+                if (!uniqueRatios.some(existing => Math.abs(existing - value) < 0.01)) {
+                    uniqueRatios.push(value);
+                }
+            });
+        return uniqueRatios.map(ratio => ({
+            ratio,
+            pathIndex: 0
+        }));
     } catch (error) {
         console.warn("Failed to derive crossings from SVG", error);
         return [];
@@ -1152,6 +1369,7 @@ const cloneDefaultTrain = index => {
         name: `${prefix}${suffix}`,
         manualPositionKm: null,
         startNodeId: null,
+        pathIndex: 0,
         color: template.color || "#1c8ef9",
         tag: template.tag || ""
     };
@@ -1180,6 +1398,10 @@ const prepareTrainPreset = (preset, index) => {
     normalized.color = typeof preset.color === "string" && preset.color ? preset.color : fallback.color;
     normalized.tag = typeof preset.tag === "string" ? preset.tag.trim() : fallback.tag;
     normalized.startNodeId = preset.startNodeId || fallback.startNodeId || null;
+    const startNode = getStartNodeById(normalized.startNodeId);
+    const defaultPathIndex = startNode && Number.isFinite(startNode.pathIndex) ? startNode.pathIndex : fallback.pathIndex;
+    const presetPathIndex = Number.isFinite(preset.pathIndex) ? preset.pathIndex : null;
+    normalized.pathIndex = presetPathIndex != null ? presetPathIndex : (Number.isFinite(defaultPathIndex) ? defaultPathIndex : 0);
 
     return normalized;
 };
@@ -1267,11 +1489,16 @@ const handleTrainInput = event => {
 
     if (field === "startNodeId") {
         const nodeId = event.target.value || null;
+        let node = null;
         if (nodeId && !getStartNodeById(nodeId)) {
             trains[index].startNodeId = null;
+            trains[index].pathIndex = 0;
         } else {
             trains[index].startNodeId = nodeId;
+            node = nodeId ? getStartNodeById(nodeId) : null;
+            trains[index].pathIndex = node && Number.isFinite(node.pathIndex) ? node.pathIndex : 0;
         }
+        recalcTimeline();
         render();
         return;
     }
@@ -1279,6 +1506,8 @@ const handleTrainInput = event => {
     if (field === "manualPositionKm") {
         if (event.target.value === "") {
             trains[index].manualPositionKm = null;
+            const node = getStartNodeById(trains[index].startNodeId);
+            trains[index].pathIndex = node && Number.isFinite(node.pathIndex) ? node.pathIndex : 0;
         } else {
             const manualValue = clampDistance(Number(event.target.value));
             trains[index].manualPositionKm = Number.isFinite(manualValue) ? manualValue : null;
@@ -1317,6 +1546,9 @@ const deriveTrainState = train => {
     const travelMinutes = (distanceKm / speed) * 60;
     const startNode = getStartNodeById(train.startNodeId);
     const startOffsetKm = startNode ? startNode.km : 0;
+    const pathIndex = Number.isFinite(train.pathIndex)
+        ? train.pathIndex
+        : (startNode && Number.isFinite(startNode.pathIndex) ? startNode.pathIndex : 0);
     return {
         ...train,
         distance: distanceKm,
@@ -1327,7 +1559,8 @@ const deriveTrainState = train => {
         manualPositionKm: train.manualPositionKm != null ? clampDistance(train.manualPositionKm) : null,
         startOffsetKm,
         color: train.color,
-        tag: train.tag
+        tag: train.tag,
+        pathIndex
     };
 };
 
@@ -1398,10 +1631,26 @@ const checkWarnings = positions => {
         for (let j = i + 1; j < positions.length; j += 1) {
             const trainA = positions[i];
             const trainB = positions[j];
-            const gap = Math.abs(trainA.distance - trainB.distance) - (trainA.state.lengthKm + trainB.state.lengthKm);
-            const nearCrossing = crossings.some(crossing =>
-                Math.abs(trainA.distance - crossing.km) < 0.01 && Math.abs(trainB.distance - crossing.km) < 0.01
+            const pathIndexA = Number.isFinite(trainA.state.pathIndex) ? trainA.state.pathIndex : 0;
+            const pathIndexB = Number.isFinite(trainB.state.pathIndex) ? trainB.state.pathIndex : 0;
+            const crossingMatch = crossings.find(crossing =>
+                Math.abs(trainA.distance - crossing.km) < 0.01 &&
+                Math.abs(trainB.distance - crossing.km) < 0.01
             );
+
+            if (pathIndexA !== pathIndexB && !crossingMatch) {
+                continue;
+            }
+
+            const gap = Math.abs(trainA.distance - trainB.distance) - (trainA.state.lengthKm + trainB.state.lengthKm);
+            const nearCrossing = crossingMatch
+                ? (
+                    (Number.isFinite(crossingMatch.pathIndex) &&
+                        crossingMatch.pathIndex === pathIndexA &&
+                        crossingMatch.pathIndex === pathIndexB) ||
+                    pathIndexA !== pathIndexB
+                )
+                : false;
 
             if (gap < SAFE_DISTANCE_KM && !nearCrossing) {
                 warnings.push({
@@ -1858,7 +2107,8 @@ const render = () => {
 
     positions.forEach(train => {
         const lane = train.index;
-        const { x, y } = getTrackPoint(train.distance, lane);
+        const pathIndex = Number.isFinite(train.state.pathIndex) ? train.state.pathIndex : 0;
+        const { x, y } = getTrackPoint(train.distance, lane, pathIndex);
         const lengthPx = Math.max(24, trackLengthKm > 0 ? (train.state.lengthKm / trackLengthKm) * TRACK_VIEW_WIDTH : 24);
         const isWarning = warningIndexes.has(train.index);
         const color = train.state.color || "#1c8ef9";
@@ -2068,18 +2318,48 @@ const buildTrack = () => {
         createStationMarker(endPoint, stationNames.end, trackLengthKm, "start");
 
         crossings.forEach((crossing, index) => {
-            const point = getTrackPoint(crossing.km, 0);
+            const point = getTrackPoint(crossing.km, 0, crossing.pathIndex);
             const markerGroup = createSvgElement("g", {
                 transform: "translate(" + point.x + ", " + point.y + ")"
             });
-            const marker = createSvgElement("circle", {
-                r: 8,
-                fill: "rgba(255, 79, 139, 0.88)",
-                stroke: "rgba(255, 79, 139, 0.35)",
-                "stroke-width": "2"
+            const crossShape = createSvgElement("g", { "pointer-events": "none" });
+            const crossHorizontal = createSvgElement("rect", {
+                x: -10,
+                y: -2,
+                width: 20,
+                height: 4,
+                fill: "rgba(255, 79, 139, 0.85)",
+                rx: 2
             });
+            const crossVertical = createSvgElement("rect", {
+                x: -2,
+                y: -10,
+                width: 4,
+                height: 20,
+                fill: "rgba(255, 79, 139, 0.85)",
+                rx: 2
+            });
+            const crossDiagA = createSvgElement("rect", {
+                x: -2,
+                y: -10,
+                width: 4,
+                height: 20,
+                fill: "rgba(255, 79, 139, 0.65)",
+                rx: 2,
+                transform: "rotate(45)"
+            });
+            const crossDiagB = createSvgElement("rect", {
+                x: -2,
+                y: -10,
+                width: 4,
+                height: 20,
+                fill: "rgba(255, 79, 139, 0.65)",
+                rx: 2,
+                transform: "rotate(-45)"
+            });
+            crossShape.append(crossHorizontal, crossVertical, crossDiagA, crossDiagB);
             const label = createSvgElement("text", {
-                y: -16,
+                y: -18,
                 fill: "rgba(9, 14, 28, 0.95)",
                 "font-size": "11",
                 "font-weight": "600",
@@ -2088,14 +2368,14 @@ const buildTrack = () => {
             });
             label.textContent = crossing.label || "Crossing " + (index + 1);
             const distanceLabel = createSvgElement("text", {
-                y: 20,
+                y: 24,
                 fill: "rgba(15, 23, 42, 0.72)",
                 "font-size": "10",
                 "text-anchor": "middle",
                 "letter-spacing": "0.05em"
             });
             distanceLabel.textContent = crossing.km.toFixed(1) + " km";
-            markerGroup.append(marker, label, distanceLabel);
+            markerGroup.append(crossShape, label, distanceLabel);
             trackBase.appendChild(markerGroup);
             attachTooltip(markerGroup, () =>
                 "<strong>" + (crossing.label || "Crossing " + (index + 1)) + "</strong><br>Distance: " +
@@ -2104,11 +2384,11 @@ const buildTrack = () => {
             );
         });
 
-        stationNodes.forEach(node => {
+    stationNodes.forEach(node => {
             if (!node || node.km <= 0.001 || Math.abs(node.km - trackLengthKm) <= 0.001) {
                 return;
             }
-            const markerPoint = getTrackPoint(node.km, 0);
+        const markerPoint = getTrackPoint(node.km, 0, node.pathIndex);
             createStationMarker(markerPoint, node.name, node.km, "end");
         });
 
@@ -2179,6 +2459,25 @@ const buildTrack = () => {
     });
     trackBase.appendChild(centerHighlight);
 
+    DEFAULT_PATH_DEFINITIONS.forEach((pathDef, idx) => {
+        if (idx === 0) {
+            return;
+        }
+        const start = pathDef.computePoint(0);
+        const end = pathDef.computePoint(1);
+        const supplementalLine = createSvgElement("line", {
+            x1: start.x,
+            y1: start.y,
+            x2: end.x,
+            y2: end.y,
+            stroke: pathDef.stroke,
+            "stroke-width": pathDef.width,
+            "stroke-linecap": "round",
+            "pointer-events": "none"
+        });
+        trackBase.appendChild(supplementalLine);
+    });
+
     const startStation = createSvgElement("g", { transform: "translate(" + TRACK_PADDING_X + ", 150)" });
     const startMarker = createSvgElement("circle", {
         r: 18,
@@ -2236,20 +2535,52 @@ const buildTrack = () => {
     );
 
     crossings.forEach((crossing, idx) => {
-        const x = TRACK_PADDING_X + (trackLengthKm > 0 ? (crossing.km / trackLengthKm) * TRACK_VIEW_WIDTH : 0);
-        const line = createSvgElement("line", {
-            x1: x,
-            x2: x,
-            y1: 100,
-            y2: 200,
-            stroke: "rgba(255, 255, 255, 0.22)",
-            "stroke-width": "2",
-            "stroke-dasharray": "6 6"
+        const point = getTrackPoint(crossing.km, 0, crossing.pathIndex);
+
+        const crossGroup = createSvgElement("g", {
+            transform: "translate(" + point.x + ", 150)"
         });
-        trackBase.appendChild(line);
+        const crossShape = createSvgElement("g", { "pointer-events": "none" });
+        const crossHorizontal = createSvgElement("rect", {
+            x: -10,
+            y: -2,
+            width: 20,
+            height: 4,
+            fill: "rgba(255, 79, 139, 0.85)",
+            rx: 2
+        });
+        const crossVertical = createSvgElement("rect", {
+            x: -2,
+            y: -10,
+            width: 4,
+            height: 20,
+            fill: "rgba(255, 79, 139, 0.85)",
+            rx: 2
+        });
+        const crossDiagA = createSvgElement("rect", {
+            x: -2,
+            y: -10,
+            width: 4,
+            height: 20,
+            fill: "rgba(255, 79, 139, 0.65)",
+            rx: 2,
+            transform: "rotate(45)"
+        });
+        const crossDiagB = createSvgElement("rect", {
+            x: -2,
+            y: -10,
+            width: 4,
+            height: 20,
+            fill: "rgba(255, 79, 139, 0.65)",
+            rx: 2,
+            transform: "rotate(-45)"
+        });
+        crossShape.append(crossHorizontal, crossVertical, crossDiagA, crossDiagB);
+        crossGroup.appendChild(crossShape);
+        trackBase.appendChild(crossGroup);
 
         const label = createSvgElement("text", {
-            x: x,
+            x: point.x,
             y: 92,
             fill: "rgba(247, 251, 255, 0.75)",
             "font-size": "12",
@@ -2261,7 +2592,7 @@ const buildTrack = () => {
         trackBase.appendChild(label);
 
         const hotspot = createSvgElement("circle", {
-            cx: x,
+            cx: point.x,
             cy: 150,
             r: 12,
             fill: "rgba(0,0,0,0)",
@@ -2277,9 +2608,9 @@ const buildTrack = () => {
         if (!node || node.km <= 0.001 || Math.abs(node.km - trackLengthKm) <= 0.001) {
             return;
         }
-        const x = TRACK_PADDING_X + (trackLengthKm > 0 ? (node.km / trackLengthKm) * TRACK_VIEW_WIDTH : 0);
+        const point = getTrackPoint(node.km, 0, node.pathIndex);
         const markerGroup = createSvgElement("g", {
-            transform: "translate(" + x + ", 150)"
+            transform: "translate(" + point.x + ", " + point.y + ")"
         });
         const marker = createSvgElement("circle", {
             r: 10,
@@ -2347,10 +2678,15 @@ const handleMapUpload = event => {
             const derivedRatios = deriveCrossingRatiosFromSvg(nestedSvg);
             let statusMessage;
             if (derivedRatios.length) {
-                crossingState = derivedRatios.map((ratio, index) => ({
-                    ratio,
-                    label: `Crossing ${index + 1}`
-                }));
+                crossingState = derivedRatios.map((entry, index) => {
+                    const ratio = typeof entry === "number" ? entry : entry.ratio;
+                    const pathIndex = typeof entry === "object" && Number.isFinite(entry.pathIndex) ? entry.pathIndex : 0;
+                    return {
+                        ratio,
+                        label: `Crossing ${index + 1}`,
+                        pathIndex
+                    };
+                });
                 recalcCrossings();
                 renderCrossingControls();
                 statusMessage = `Loaded: ${file.name} • ${crossings.length} map crossings`;
@@ -2476,27 +2812,32 @@ const handleTrackClick = event => {
 
     const localPoint = getLocalPointFromClient(event.clientX, event.clientY);
     let km;
+    let pathIndexForTrain = 0;
     if (usingCustomTrackPath && trackPathElement && trackPathLength > 0) {
         const projection = projectPointToTrackPath(localPoint);
         if (!projection) {
             return;
         }
         km = projection.km;
+        pathIndexForTrain = projection.pathIndex;
     } else {
-        const normalized = (localPoint.x - TRACK_PADDING_X) / TRACK_VIEW_WIDTH;
-        if (normalized < 0 || normalized > 1) {
+        const fallbackProjection = projectPointToFallbackPaths(localPoint);
+        if (!fallbackProjection) {
             return;
         }
-        km = clampDistance(normalized * trackLengthKm);
-        if (!Number.isFinite(km)) {
-            return;
-        }
+        km = clampDistance(fallbackProjection.ratio * trackLengthKm);
+        pathIndexForTrain = fallbackProjection.pathIndex;
+    }
+
+    if (!Number.isFinite(km)) {
+        return;
     }
 
     const train = trains[activeTrainIndex];
     if (!train) {
         return;
     }
+    train.pathIndex = pathIndexForTrain;
     train.manualPositionKm = km;
     syncManualInputForTrain(activeTrainIndex);
     render();
@@ -2706,14 +3047,20 @@ const serializeScenario = () => ({
     stations: customStationNodes.map(node => ({
         id: node.id,
         name: node.name,
-        km: node.km
+        km: node.km,
+        pathIndex: Number.isFinite(node.pathIndex) ? node.pathIndex : 0
     })),
     startNodes: startNodes.map(node => ({
         id: node.id,
         name: node.name,
-        km: node.km
+        km: node.km,
+        pathIndex: Number.isFinite(node.pathIndex) ? node.pathIndex : 0
     })),
-    crossingState: crossingState.map(state => ({ ratio: state.ratio, label: state.label })),
+    crossingState: crossingState.map(state => ({
+        ratio: state.ratio,
+        label: state.label,
+        pathIndex: Number.isFinite(state.pathIndex) ? state.pathIndex : 0
+    })),
     playbackSpeed: playbackMultiplier,
     trains: trains.map(train => ({
         name: train.name,
@@ -2724,6 +3071,7 @@ const serializeScenario = () => ({
         carLength: train.carLength,
         manualPositionKm: train.manualPositionKm,
         startNodeId: train.startNodeId,
+        pathIndex: Number.isFinite(train.pathIndex) ? train.pathIndex : 0,
         color: train.color,
         tag: train.tag
     }))
@@ -2738,7 +3086,8 @@ const applyScenario = scenario => {
     scenarioStartNodeFallback = Array.isArray(scenario.startNodes)
         ? scenario.startNodes.map(node => ({
             name: node?.name || "Start Node",
-            km: clampDistance(Number.isFinite(node?.km) ? node.km : 0)
+            km: clampDistance(Number.isFinite(node?.km) ? node.km : 0),
+            pathIndex: Number.isFinite(node?.pathIndex) ? node.pathIndex : 0
         }))
         : [];
 
@@ -2775,6 +3124,8 @@ const applyScenario = scenario => {
                 id,
                 name,
                 km,
+                point: getTrackPoint(km, 0, Number.isFinite(station.pathIndex) ? station.pathIndex : 0),
+                pathIndex: Number.isFinite(station.pathIndex) ? station.pathIndex : 0,
                 source: "custom"
             });
         });
@@ -2797,7 +3148,11 @@ const applyScenario = scenario => {
                 if (ratio === null) {
                     return null;
                 }
-                return { ratio, label };
+                return {
+                    ratio,
+                    label,
+                    pathIndex: Number.isFinite(entry.pathIndex) ? entry.pathIndex : 0
+                };
             })
             .filter(Boolean);
         if (!crossingState.length) {
@@ -2830,12 +3185,14 @@ const applyScenario = scenario => {
             const name = node.name || "Start Node";
             const km = clampDistance(Number.isFinite(node.km) ? node.km : 0);
             const id = node.id || makeStartNodeId(name, km);
+            const pathIndex = Number.isFinite(node.pathIndex) ? node.pathIndex : 0;
             if (!startNodes.some(existing => existing.id === id)) {
                 startNodes.push({
                     id,
                     name,
                     km,
-                    point: getTrackPoint(km, 0)
+                    point: getTrackPoint(km, 0, pathIndex),
+                    pathIndex
                 });
             }
         });
@@ -2908,7 +3265,8 @@ const serializeMetadata = () => ({
     stationNames,
     crossingState: crossingState.map(state => ({
         ratio: state.ratio,
-        label: state.label
+        label: state.label,
+        pathIndex: Number.isFinite(state.pathIndex) ? state.pathIndex : 0
     }))
 });
 
@@ -2943,7 +3301,7 @@ const applyMetadata = metadata => {
                 if (ratio === null) {
                     return null;
                 }
-                return { ratio, label };
+                return { ratio, label, pathIndex: Number.isFinite(entry.pathIndex) ? entry.pathIndex : 0 };
             })
             .filter(Boolean);
         if (!crossingState.length) {
