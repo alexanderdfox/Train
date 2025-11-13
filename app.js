@@ -101,6 +101,10 @@ const CONFLICT_LOG_LIMIT = 500;
 const conflictLog = [];
 const conflictLogKeys = new Set();
 let activeConflictFilter = "all";
+const tooltipElement = document.createElement("div");
+tooltipElement.className = "track-tooltip";
+document.body.appendChild(tooltipElement);
+let tooltipVisible = false;
 
 const createSvgElement = (tag, attributes = {}) => {
     const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -133,6 +137,54 @@ const escapeAttribute = value =>
         .replace(/"/g, "&quot;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+
+const showTooltip = (html, clientX, clientY) => {
+    tooltipElement.innerHTML = html;
+    tooltipElement.style.left = clientX + "px";
+    tooltipElement.style.top = clientY + "px";
+    if (!tooltipVisible) {
+        tooltipElement.classList.add("is-visible");
+        tooltipVisible = true;
+    }
+};
+
+const moveTooltip = (clientX, clientY) => {
+    if (!tooltipVisible) {
+        return;
+    }
+    tooltipElement.style.left = clientX + "px";
+    tooltipElement.style.top = clientY + "px";
+};
+
+const hideTooltip = () => {
+    if (!tooltipVisible) {
+        return;
+    }
+    tooltipElement.classList.remove("is-visible");
+    tooltipVisible = false;
+};
+
+const attachTooltip = (target, getContent) => {
+    if (!target) {
+        return;
+    }
+    target.addEventListener("pointerenter", event => {
+        const content = getContent();
+        if (!content) {
+            return;
+        }
+        showTooltip(content, event.clientX, event.clientY);
+    });
+    target.addEventListener("pointermove", event => {
+        moveTooltip(event.clientX, event.clientY);
+    });
+    target.addEventListener("pointerleave", () => {
+        hideTooltip();
+    });
+    target.addEventListener("pointercancel", () => {
+        hideTooltip();
+    });
+};
 
 const getLocalPointFromClient = (clientX, clientY) => {
     if (!trackSvg || !viewportRoot || typeof trackSvg.createSVGPoint !== "function") {
@@ -296,6 +348,14 @@ const updateTrackPath = () => {
             trackPathElement = candidate;
             trackPathLength = length;
             usingCustomTrackPath = true;
+            const override =
+                parseFloat(candidate.getAttribute("data-track-length-km")) ||
+                parseFloat(candidate.getAttribute("data-track-length")) ||
+                parseFloat(candidate.dataset?.trackLengthKm);
+            if (Number.isFinite(override) && override > 0 && Math.abs(override - trackLengthKm) > 0.01) {
+                trackLengthInput.value = override;
+                handleTrackLengthChange();
+            }
             return;
         }
     }
@@ -822,11 +882,27 @@ const recordConflicts = (warnings, minute) => {
             return;
         }
         conflictLogKeys.add(key);
+        const deficitMeters = Math.max(0, SAFE_DISTANCE - warning.gapMeters);
+        let suggestion = "";
+        if (deficitMeters > 0) {
+            const trailing =
+                warning.trains[0].distance <= warning.trains[1].distance
+                    ? warning.trains[0]
+                    : warning.trains[1];
+            const trailingSpeed = Math.max(trailing.state.speed || 0, 1);
+            const delayMinutes = Math.ceil((deficitMeters / 1000) / trailingSpeed * 60);
+            if (Number.isFinite(delayMinutes) && delayMinutes > 0) {
+                suggestion = "Delay " + trailing.name + " by " + delayMinutes + " min";
+            } else {
+                suggestion = "Reduce " + trailing.name + " speed briefly";
+            }
+        }
         const entry = {
             key,
             minute: normalizedMinute,
             trains: names,
-            gapMeters: warning.gapMeters
+            gapMeters: warning.gapMeters,
+            suggestion
         };
         conflictLog.push(entry);
         if (conflictLog.length > CONFLICT_LOG_LIMIT) {
@@ -898,10 +974,14 @@ const renderConflictLog = (currentMinute = null) => {
         if (normalizedMinute !== null && entry.minute === normalizedMinute) {
             item.classList.add("is-active");
         }
+        const suggestionHtml = entry.suggestion
+            ? `<span class="conflict-log-suggestion">${entry.suggestion}</span>`
+            : "";
         item.innerHTML = `
             <span class="conflict-log-time">${formatTime(entry.minute)}</span>
             <span class="conflict-log-trains">${entry.trains.join(" ↔ ")}</span>
             <span class="conflict-log-gap">${entry.gapMeters.toFixed(0)} m</span>
+            ${suggestionHtml}
         `;
         item.addEventListener("click", () => {
             if (playing) {
@@ -932,6 +1012,7 @@ const render = () => {
     updateTimeLabels();
 
     trainLayer.innerHTML = "";
+    hideTooltip();
     trains.forEach((_, idx) => {
         const previousGroup = document.getElementById(`train-icon-${idx}`);
         if (previousGroup) {
@@ -990,6 +1071,15 @@ const render = () => {
             });
             infoLabel.textContent = `${train.distance.toFixed(1)} km`;
             iconGroup.append(halo, dot, iconLabel, infoLabel);
+            attachTooltip(iconGroup, () =>
+                "<strong>" +
+                train.name +
+                "</strong><br>" +
+                "Speed: " +
+                train.state.speed.toFixed(0) +
+                " km/h" +
+                (tagSuffix ? "<br>" + tagSuffix.slice(3) : "")
+            );
             trainLayer.appendChild(iconGroup);
             return;
         }
@@ -1052,6 +1142,16 @@ const render = () => {
         positionTag.textContent = `${train.distance.toFixed(1)} km`;
 
         group.append(labelBg, label, rect, nose, positionTag);
+        attachTooltip(group, () =>
+            "<strong>" +
+            train.name +
+            "</strong><br>Speed: " +
+            train.state.speed.toFixed(0) +
+            " km/h<br>Distance: " +
+            train.distance.toFixed(1) +
+            " km" +
+            (tagSuffix ? "<br>" + tagSuffix.slice(3) : "")
+        );
         trainLayer.appendChild(group);
     });
 
@@ -1111,6 +1211,9 @@ const buildTrack = () => {
             distanceLabel.textContent = distanceKm.toFixed(1) + " km";
             group.append(outer, inner, nameLabel, distanceLabel);
             trackBase.appendChild(group);
+            attachTooltip(group, () =>
+                "<strong>" + label + "</strong><br>Distance: " + distanceKm.toFixed(1) + " km"
+            );
         };
 
         createStationMarker(startPoint, stationNames.start, 0, "end");
@@ -1146,8 +1249,14 @@ const buildTrack = () => {
             distanceLabel.textContent = crossing.km.toFixed(1) + " km";
             markerGroup.append(marker, label, distanceLabel);
             trackBase.appendChild(markerGroup);
+            attachTooltip(markerGroup, () =>
+                "<strong>" + (crossing.label || "Crossing " + (index + 1)) + "</strong><br>Distance: " +
+                crossing.km.toFixed(1) +
+                " km"
+            );
         });
 
+        applyViewportTransform();
         return;
     }
     const ballast = createSvgElement("rect", {
@@ -1237,6 +1346,9 @@ const buildTrack = () => {
     startLabel.textContent = stationNames.start + " • 0 km";
     startStation.append(startMarker, startInner, startLabel);
     trackBase.appendChild(startStation);
+    attachTooltip(startStation, () =>
+        "<strong>" + stationNames.start + "</strong><br>Distance: 0 km"
+    );
 
     const endStation = createSvgElement("g", {
         transform: "translate(" + (TRACK_PADDING_X + TRACK_VIEW_WIDTH) + ", 150)"
@@ -1263,6 +1375,9 @@ const buildTrack = () => {
     endLabel.textContent = stationNames.end + " • " + trackLengthKm.toFixed(1) + " km";
     endStation.append(endMarker, endInner, endLabel);
     trackBase.appendChild(endStation);
+    attachTooltip(endStation, () =>
+        "<strong>" + stationNames.end + "</strong><br>Distance: " + trackLengthKm.toFixed(1) + " km"
+    );
 
     crossings.forEach((crossing, idx) => {
         const x = TRACK_PADDING_X + (trackLengthKm > 0 ? (crossing.km / trackLengthKm) * TRACK_VIEW_WIDTH : 0);
@@ -1288,7 +1403,21 @@ const buildTrack = () => {
         const labelText = crossing.label || ("Crossing " + (idx + 1));
         label.textContent = labelText + " • " + crossing.km.toFixed(1) + " km";
         trackBase.appendChild(label);
+
+        const hotspot = createSvgElement("circle", {
+            cx: x,
+            cy: 150,
+            r: 12,
+            fill: "rgba(0,0,0,0)",
+            "pointer-events": "all"
+        });
+        trackBase.appendChild(hotspot);
+        attachTooltip(hotspot, () =>
+            "<strong>" + labelText + "</strong><br>Distance: " + crossing.km.toFixed(1) + " km"
+        );
     });
+
+    applyViewportTransform();
 };
 
 const handleMapUpload = event => {

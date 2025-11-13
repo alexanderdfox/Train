@@ -394,6 +394,10 @@ button.secondary {
     font-size: 0.95rem;
 }
 
+.viewport-controls button.secondary {
+    min-width: auto;
+}
+
 .dot {
     display: inline-flex;
     width: 18px;
@@ -523,10 +527,39 @@ svg {
     text-align: right;
 }
 
+.conflict-log-suggestion {
+    grid-column: 1 / -1;
+    font-size: 0.83rem;
+    color: rgba(109, 248, 255, 0.85);
+    letter-spacing: 0.05em;
+    margin-top: 4px;
+}
+
 .conflict-empty {
     color: var(--text-secondary);
     font-size: 0.9rem;
     letter-spacing: 0.05em;
+}
+
+.track-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: rgba(9, 14, 32, 0.94);
+    color: #f7fbff;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(109, 248, 255, 0.4);
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+    transform: translate(-50%, -130%);
+    opacity: 0;
+    z-index: 999;
+    transition: opacity 0.12s ease;
+}
+
+.track-tooltip.is-visible {
+    opacity: 1;
 }
 
 .track-labels {
