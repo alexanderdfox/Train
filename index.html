@@ -10,16 +10,32 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <div class="orientation-notice">
+        <span>Rotate your device for the full Rail Flow experience.</span>
+    </div>
+    <div class="app-viewport">
     <div class="app-shell">
-        <header>
-            <h1>Rail Flow Visual Calculator</h1>
-            <p>
-                Plan up to one thousand trains on a shared mainline. Upload a route-mapped SVG, position consists directly on
-                the canvas, label stations and rail-rail crossings, and monitor separation in real time.
-            </p>
+        <header class="app-header">
+            <div class="header-glow"></div>
+            <div class="header-content">
+                <div class="header-intro">
+                    <span class="brand-badge">Rail Flow</span>
+                    <h1>Visual Train Flow Orchestrator</h1>
+                    <p>
+                        Plan up to a thousand consists along complex SVG routes. Upload rail schematics, position consists
+                        directly on the canvas, label electrified junctions, and monitor operational spacing in real time.
+                    </p>
+                </div>
+                <ul class="header-pills">
+                    <li>SVG-native mapping</li>
+                    <li>1000 train timeline</li>
+                    <li>Conflict intelligence</li>
+                </ul>
+            </div>
         </header>
 
-        <section class="controls-panel">
+        <main class="main-layout">
+        <section class="controls-panel glass-panel">
             <div class="controls-grid">
                 <div class="control-card">
                     <div class="control-title">
@@ -148,7 +164,7 @@
             <div class="train-controls" id="train-controls"></div>
         </section>
 
-        <section class="visual-panel">
+        <section class="visual-panel glass-panel">
             <div class="visual-header">
                 <div>
                     <h2>Live Track View</h2>
@@ -220,6 +236,9 @@
                 </div>
             </div>
         </section>
+        </section>
+        </main>
+    </div>
     </div>
 
     <script src="app.js"></script>
