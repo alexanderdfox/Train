@@ -163,6 +163,64 @@ textarea:focus {
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
+.station-list {
+    display: grid;
+    gap: 10px;
+    min-width: 220px;
+}
+
+.station-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 46px;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(8, 12, 28, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.station-row label {
+    display: grid;
+    gap: 4px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.station-row input {
+    width: 100%;
+}
+
+.station-row button {
+    min-width: auto;
+    padding-inline: 10px;
+    font-size: 0.9rem;
+}
+
+.multi-start-control {
+    display: grid;
+    gap: 8px;
+}
+
+.multi-start-select {
+    display: grid;
+    gap: 8px;
+}
+
+#start-nodes-select {
+    min-height: 120px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(5, 9, 22, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--text-primary);
+}
+
+.multi-start-actions {
+    display: flex;
+    gap: 10px;
+}
+
 .control-meta {
     display: flex;
     align-items: baseline;
@@ -306,7 +364,7 @@ button.secondary {
 
 .train-row {
     display: grid;
-    grid-template-columns: 86px repeat(8, minmax(0, 1fr));
+    grid-template-columns: 86px repeat(9, minmax(0, 1fr));
     gap: 12px;
     align-items: center;
     background: rgba(8, 12, 29, 0.72);

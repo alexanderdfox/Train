@@ -65,10 +65,16 @@ const conflictFilterSelect = document.getElementById("conflict-filter");
 const conflictLogList = document.getElementById("conflict-log-list");
 const conflictClearBtn = document.getElementById("conflict-clear");
 const reportGenerateBtn = document.getElementById("report-generate");
+const stationListContainer = document.getElementById("station-list");
+const addStationBtn = document.getElementById("add-station");
+const startNodesSelect = document.getElementById("start-nodes-select");
+const startNodesApplyBtn = document.getElementById("start-nodes-apply");
+const startNodesClearBtn = document.getElementById("start-nodes-clear");
 
 trainCountInput.max = MAX_TRAINS;
 
 let stationNames = { ...DEFAULT_STATIONS };
+let stationNodes = [];
 let trackLengthKm = DEFAULT_TRACK_LENGTH;
 let crossingState = DEFAULT_CROSSINGS.map((km, index) => ({
     ratio: km / DEFAULT_TRACK_LENGTH,
@@ -102,6 +108,9 @@ const CONFLICT_LOG_LIMIT = 500;
 const conflictLog = [];
 const conflictLogKeys = new Set();
 let activeConflictFilter = "all";
+const startNodes = [];
+let scenarioStartNodeFallback = [];
+const customStationNodes = [];
 const tooltipElement = document.createElement("div");
 tooltipElement.className = "track-tooltip";
 document.body.appendChild(tooltipElement);
@@ -146,6 +155,420 @@ const escapeHtml = value =>
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
+
+const makeStationNodeId = (name, km) => makeStartNodeId(name, km);
+
+const collectStationNodesFromMap = () => {
+    if (!mapLayer) {
+        return [];
+    }
+
+    const selectors = [
+        "[data-station]",
+        "[data-station-name]",
+        "[data-distance-km]",
+        "[data-start-node]",
+        "[data-node='start']",
+        ".station-node",
+        ".station",
+        ".stop"
+    ];
+
+    const elements = Array.from(mapLayer.querySelectorAll(selectors.join(",")));
+    const results = [];
+    const seenIds = new Set();
+
+    elements.forEach((el, index) => {
+        let name =
+            el.getAttribute("data-station-name") ||
+            el.getAttribute("data-station") ||
+            el.getAttribute("data-name") ||
+            el.getAttribute("id") ||
+            el.textContent?.trim() ||
+            "";
+        name = (name || ("Station " + (index + 1))).trim();
+
+        const distanceAttr =
+            el.getAttribute("data-distance-km") ||
+            el.getAttribute("data-km") ||
+            el.dataset?.distanceKm ||
+            el.dataset?.km;
+        let km = Number(distanceAttr);
+        let point = null;
+
+        if (!Number.isFinite(km) && typeof el.getBBox === "function") {
+            const bbox = el.getBBox();
+            const center = {
+                x: bbox.x + bbox.width / 2,
+                y: bbox.y + bbox.height / 2
+            };
+            const projection = projectPointToTrackPath(center);
+            if (projection) {
+                km = projection.km;
+                point = projection.point;
+            }
+        }
+
+        if (!Number.isFinite(km)) {
+            const bbox = typeof el.getBBox === "function" ? el.getBBox() : null;
+            if (bbox) {
+                const center = {
+                    x: bbox.x + bbox.width / 2,
+                    y: bbox.y + bbox.height / 2
+                };
+                const projection = projectPointToTrackPath(center);
+                if (projection) {
+                    km = projection.km;
+                    point = projection.point;
+                }
+            }
+        }
+
+        if (!Number.isFinite(km)) {
+            return;
+        }
+
+        km = clampDistance(km);
+        if (!point) {
+            point = getTrackPoint(km, 0);
+        }
+
+        const idAttr = el.getAttribute("data-station-id") || el.getAttribute("id");
+        let id = idAttr ? idAttr : makeStationNodeId(name, km) + "-map-" + index;
+        if (seenIds.has(id)) {
+            id = id + "-" + index;
+        }
+        seenIds.add(id);
+
+        results.push({
+            id,
+            name,
+            km,
+            point,
+            source: "map",
+            element: el
+        });
+    });
+
+    return results;
+};
+
+const mergeStationNodes = (mapStations = []) => {
+    const unique = new Map();
+    const addEntry = node => {
+        if (!node) {
+            return;
+        }
+        const km = clampDistance(Number(node.km) || 0);
+        const normalizedName = (node.name || "Station").trim() || "Station";
+        const id = node.id || makeStationNodeId(normalizedName, km);
+        unique.set(id, {
+            id,
+            name: normalizedName,
+            km,
+            point: node.point || getTrackPoint(km, 0),
+            source: node.source || "map"
+        });
+    };
+
+    mapStations.forEach(addEntry);
+    customStationNodes.forEach(node =>
+        addEntry({
+            ...node,
+            source: "custom",
+            point: getTrackPoint(node.km, 0)
+        })
+    );
+
+    stationNodes = Array.from(unique.values()).sort((a, b) => a.km - b.km);
+};
+
+const renderStationList = () => {
+    if (!stationListContainer) {
+        return;
+    }
+    stationListContainer.innerHTML = "";
+
+    if (!stationNodes.length) {
+        const empty = document.createElement("div");
+        empty.className = "conflict-empty";
+        empty.textContent = "No additional stations defined.";
+        stationListContainer.appendChild(empty);
+        return;
+    }
+
+    stationNodes.forEach(node => {
+        const row = document.createElement("div");
+        row.className = "station-row";
+        row.dataset.id = node.id;
+        row.dataset.source = node.source || "map";
+
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = "Name";
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.value = node.name;
+        nameInput.dataset.field = "name";
+        if (node.source !== "custom") {
+            nameInput.disabled = true;
+        }
+        nameLabel.appendChild(nameInput);
+
+        const kmLabel = document.createElement("label");
+        kmLabel.textContent = "Distance (km)";
+        const kmInput = document.createElement("input");
+        kmInput.type = "number";
+        kmInput.step = "0.1";
+        kmInput.min = "0";
+        kmInput.max = String(trackLengthKm);
+        kmInput.value = node.km.toFixed(1);
+        kmInput.dataset.field = "km";
+        if (node.source !== "custom") {
+            kmInput.disabled = true;
+        }
+        kmLabel.appendChild(kmInput);
+
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.textContent = "✕";
+        removeBtn.dataset.action = "remove-station";
+        if (node.source !== "custom") {
+            removeBtn.disabled = true;
+        }
+
+        row.appendChild(nameLabel);
+        row.appendChild(kmLabel);
+        row.appendChild(removeBtn);
+        stationListContainer.appendChild(row);
+    });
+};
+
+const addCustomStationNode = (name, km) => {
+    const normalizedName = (name || "Station").trim() || "Station";
+    const normalizedKm = clampDistance(Number.isFinite(km) ? km : 0);
+    const id = makeStationNodeId(normalizedName, normalizedKm) + "-custom-" + Date.now();
+    const node = {
+        id,
+        name: normalizedName,
+        km: normalizedKm,
+        source: "custom"
+    };
+    customStationNodes.push(node);
+    return node;
+};
+
+const handleStationListInput = event => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+        return;
+    }
+    const row = target.closest(".station-row");
+    if (!row) {
+        return;
+    }
+    const id = row.dataset.id;
+    const source = row.dataset.source;
+    const field = target.dataset.field;
+
+    if (source !== "custom") {
+        const match = stationNodes.find(node => node.id === id);
+        if (!match) {
+            return;
+        }
+        if (field === "name") {
+            target.value = match.name;
+        } else if (field === "km") {
+            target.value = match.km.toFixed(1);
+        }
+        return;
+    }
+
+    const node = customStationNodes.find(item => item.id === id);
+    if (!node) {
+        return;
+    }
+
+    if (field === "name") {
+        node.name = target.value;
+    } else if (field === "km") {
+        const km = clampDistance(Number(target.value) || 0);
+        node.km = km;
+        node.point = getTrackPoint(km, 0);
+        target.value = km.toFixed(1);
+    }
+
+    mergeStationNodes(collectStationNodesFromMap());
+    renderStationList();
+    collectStartNodes();
+    buildTrack();
+    render();
+};
+
+const handleStationListClick = event => {
+    const button = event.target.closest("button[data-action='remove-station']");
+    if (!button) {
+        return;
+    }
+    const row = button.closest(".station-row");
+    if (!row || row.dataset.source !== "custom") {
+        return;
+    }
+    const id = row.dataset.id;
+    const index = customStationNodes.findIndex(node => node.id === id);
+    if (index >= 0) {
+        customStationNodes.splice(index, 1);
+        mergeStationNodes(collectStationNodesFromMap());
+        renderStationList();
+        collectStartNodes();
+        buildTrack();
+        render();
+    }
+};
+const getStartNodeById = id => startNodes.find(node => node.id === id) || null;
+
+const makeStartNodeId = (name, km) => {
+    const normalizedName = (name || "node").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    return normalizedName + "|" + km.toFixed(3);
+};
+
+const addStartNode = (name, km, point) => {
+    const normalizedName = (name || "Start Node").trim() || "Start Node";
+    const normalizedKm = clampDistance(Number.isFinite(km) ? km : 0);
+    const id = makeStartNodeId(normalizedName, normalizedKm);
+    const nodePoint = point || getTrackPoint(normalizedKm, 0);
+    const existingIndex = startNodes.findIndex(node => node.id === id);
+    const node = {
+        id,
+        name: normalizedName,
+        km: normalizedKm,
+        point: nodePoint
+    };
+    if (existingIndex >= 0) {
+        startNodes[existingIndex] = node;
+    } else {
+        startNodes.push(node);
+    }
+    return node;
+};
+
+const finalizeStartNodes = () => {
+    startNodes.sort((a, b) => a.km - b.km);
+    refreshStartNodeSelectOptions();
+    scenarioStartNodeFallback = startNodes.map(node => ({
+        id: node.id,
+        name: node.name,
+        km: node.km
+    }));
+};
+
+const buildStartNodeOptions = selectedId => {
+    let options = '<option value="">Default Origin (0 km)</option>';
+    startNodes.forEach(node => {
+        options += '<option value="' + escapeHtml(node.id) + '"' + (node.id === selectedId ? " selected" : "") + ">" +
+            escapeHtml(node.name) + " (" + node.km.toFixed(1) + " km)</option>";
+    });
+    return options;
+};
+
+const syncStartNodeSelections = () => {
+    const selects = trainControlsContainer.querySelectorAll("select[data-field='startNodeId']");
+    selects.forEach(select => {
+        const row = select.closest(".train-row");
+        if (!row) {
+            return;
+        }
+        const index = Number(row.dataset.index);
+        const train = trains[index];
+        if (train && train.startNodeId && !getStartNodeById(train.startNodeId)) {
+            train.startNodeId = null;
+        }
+        select.innerHTML = buildStartNodeOptions(train?.startNodeId || "");
+    });
+};
+
+const refreshStartNodeSelectOptions = () => {
+    if (startNodesSelect) {
+        const preserved = new Set(Array.from(startNodesSelect.selectedOptions).map(option => option.value));
+        startNodesSelect.innerHTML = startNodes
+            .map(node => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)} (${node.km.toFixed(1)} km)</option>`)
+            .join("");
+        Array.from(startNodesSelect.options).forEach(option => {
+            option.selected = preserved.has(option.value);
+        });
+    }
+    syncStartNodeSelections();
+};
+
+const collectStartNodes = () => {
+    startNodes.length = 0;
+
+    addStartNode(stationNames.start || "Origin", 0, getTrackPoint(0, 0));
+    addStartNode(stationNames.end || "Destination", trackLengthKm, getTrackPoint(trackLengthKm, 0));
+
+    stationNodes.forEach(node => {
+        if (!node) {
+            return;
+        }
+        if (node.km <= 0.001 || Math.abs(node.km - trackLengthKm) <= 0.001) {
+            return;
+        }
+        addStartNode(node.name, node.km, node.point || getTrackPoint(node.km, 0));
+    });
+
+    crossings.forEach((crossing, index) => {
+        const point = getTrackPoint(crossing.km, 0);
+        addStartNode(crossing.label || "Crossing " + (index + 1), crossing.km, point);
+    });
+
+    if (Array.isArray(scenarioStartNodeFallback)) {
+        scenarioStartNodeFallback.forEach(node => {
+            if (!node) {
+                return;
+            }
+            addStartNode(node.name || "Start Node", node.km ?? 0);
+        });
+    }
+
+    finalizeStartNodes();
+};
+
+const applyStartNodesSequentially = nodeIds => {
+    if (!nodeIds || !nodeIds.length || !trains.length) {
+        return;
+    }
+    let index = Number.isFinite(activeTrainIndex) ? activeTrainIndex : 0;
+    if (index < 0) {
+        index = 0;
+    }
+    if (index >= trains.length) {
+        index = trains.length - 1;
+    }
+    nodeIds.forEach(nodeId => {
+        const node = getStartNodeById(nodeId);
+        if (!node) {
+            return;
+        }
+        if (index >= trains.length) {
+            index = trains.length - 1;
+        }
+        trains[index].startNodeId = nodeId;
+        index += 1;
+    });
+    syncStartNodeSelections();
+    render();
+};
+
+const clearActiveTrainStartNode = () => {
+    if (!trains.length) {
+        return;
+    }
+    const index = Number.isFinite(activeTrainIndex) ? activeTrainIndex : 0;
+    if (trains[index]) {
+        trains[index].startNodeId = null;
+    }
+    syncStartNodeSelections();
+    render();
+};
 
 const showTooltip = (html, clientX, clientY) => {
     tooltipElement.innerHTML = html;
@@ -252,6 +675,7 @@ const changeZoom = (factor, focusPoint) => {
         panY *= newZoom / zoomLevel;
     }
     zoomLevel = newZoom;
+    collectStartNodes();
     applyViewportTransform();
 };
 
@@ -324,6 +748,9 @@ const updateTrackPath = () => {
     usingCustomTrackPath = false;
 
     if (!mapLayer) {
+        mergeStationNodes([]);
+        renderStationList();
+        collectStartNodes();
         return;
     }
 
@@ -365,9 +792,13 @@ const updateTrackPath = () => {
                 trackLengthInput.value = override;
                 handleTrackLengthChange();
             }
-            return;
         }
     }
+
+    const mapStations = collectStationNodesFromMap();
+    mergeStationNodes(mapStations);
+    renderStationList();
+    collectStartNodes();
 };
 
 const transformPathPoint = (point, element) => {
@@ -492,6 +923,8 @@ const recalcCrossings = () => {
         km: state.ratio * trackLengthKm,
         label: state.label
     }));
+
+    collectStartNodes();
 };
 
 const resetCrossingsToDefault = () => {
@@ -667,6 +1100,7 @@ const cloneDefaultTrain = index => {
         ...template,
         name: `${prefix}${suffix}`,
         manualPositionKm: null,
+        startNodeId: null,
         color: template.color || "#1c8ef9",
         tag: template.tag || ""
     };
@@ -694,6 +1128,7 @@ const prepareTrainPreset = (preset, index) => {
         : null;
     normalized.color = typeof preset.color === "string" && preset.color ? preset.color : fallback.color;
     normalized.tag = typeof preset.tag === "string" ? preset.tag.trim() : fallback.tag;
+    normalized.startNodeId = preset.startNodeId || fallback.startNodeId || null;
 
     return normalized;
 };
@@ -719,6 +1154,7 @@ const buildTrainControls = (count, presetTrains = null) => {
         const manualAttrValue = escapeAttribute(manualValue);
         const colorValue = escapeAttribute(train.color || "#1c8ef9");
         const tagValue = escapeAttribute(train.tag || "");
+        const startNodeOptions = buildStartNodeOptions(train.startNodeId);
         row.innerHTML = `
             <strong>Train ${train.name}</strong>
             <label>Departure<input type="time" value="${train.departure}" data-field="departure"></label>
@@ -726,12 +1162,13 @@ const buildTrainControls = (count, presetTrains = null) => {
             <label>Distance (km)<input type="number" min="1" value="${train.distance}" data-field="distance"></label>
             <label>Cars<input type="number" min="1" max="20" value="${train.cars}" data-field="cars"></label>
             <label>Car Length (m)<input type="number" min="5" max="40" value="${train.carLength}" data-field="carLength"></label>
+            <label>Start Node<select data-field="startNodeId">${startNodeOptions}</select></label>
             <label>Color<input type="color" value="${colorValue}" data-field="color"></label>
             <label>Tag / Icon<input type="text" maxlength="20" placeholder="optional" value="${tagValue}" data-field="tag"></label>
             <label>Manual Pos (km)<input type="number" min="0" step="0.1" placeholder="auto" value="${manualAttrValue}" data-field="manualPositionKm"></label>
         `;
 
-        row.querySelectorAll("input").forEach(input => {
+        row.querySelectorAll("input, select").forEach(input => {
             input.addEventListener("input", handleTrainInput);
         });
         row.addEventListener("click", () => setActiveTrain(i));
@@ -777,6 +1214,17 @@ const handleTrainInput = event => {
         return;
     }
 
+    if (field === "startNodeId") {
+        const nodeId = event.target.value || null;
+        if (nodeId && !getStartNodeById(nodeId)) {
+            trains[index].startNodeId = null;
+        } else {
+            trains[index].startNodeId = nodeId;
+        }
+        render();
+        return;
+    }
+
     if (field === "manualPositionKm") {
         if (event.target.value === "") {
             trains[index].manualPositionKm = null;
@@ -816,6 +1264,8 @@ const deriveTrainState = train => {
     const distanceKm = clampDistance(Number(train.distance) || 0);
     const speed = Math.max(Number(train.speed) || 1, 1);
     const travelMinutes = (distanceKm / speed) * 60;
+    const startNode = getStartNodeById(train.startNodeId);
+    const startOffsetKm = startNode ? startNode.km : 0;
     return {
         ...train,
         distance: distanceKm,
@@ -824,6 +1274,7 @@ const deriveTrainState = train => {
         arrivalMinutes: departureMinutes + travelMinutes,
         lengthKm: (train.cars * train.carLength) / 1000,
         manualPositionKm: train.manualPositionKm != null ? clampDistance(train.manualPositionKm) : null,
+        startOffsetKm,
         color: train.color,
         tag: train.tag
     };
@@ -876,7 +1327,8 @@ const calculatePositions = minutes => {
             }
 
             const elapsedHours = (currentMinute - train.departureMinutes) / 60;
-            const distance = clampDistance(train.speed * elapsedHours);
+            const traveledKm = Math.min(train.speed * elapsedHours, train.distance);
+            const distance = clampDistance((train.startOffsetKm || 0) + traveledKm);
 
             return {
                 index: idx,
@@ -948,7 +1400,7 @@ const recordConflicts = (warnings, minute) => {
             return;
         }
         conflictLogKeys.add(key);
-        const deficitMeters = Math.max(0, SAFE_DISTANCE * 1000 - warning.gapMeters);
+        const deficitMeters = Math.max(0, SAFE_DISTANCE_KM * 1000 - warning.gapMeters);
         let suggestion = "";
         if (deficitMeters > 0) {
             const trailing =
@@ -1074,6 +1526,18 @@ const clearConflictLog = () => {
 };
 
 const buildReportTableRows = scenario => {
+    const scenarioStartNodes = scenario.startNodes || [];
+    const resolveOriginLabel = train => {
+        if (train.startNodeId) {
+            const node = getStartNodeById(train.startNodeId) ||
+                scenarioStartNodes.find(item => item.id === train.startNodeId);
+            if (node) {
+                return node.name + " (" + Number(node.km || 0).toFixed(1) + " km)";
+            }
+        }
+        return (stationNames.start || "Origin") + " (0 km)";
+    };
+
     return scenario.trains
         .map(train => {
             const colorBlock =
@@ -1086,6 +1550,9 @@ const buildReportTableRows = scenario => {
                 colorBlock +
                 escapeHtml(train.name) +
                 (train.tag ? " <small>(" + escapeHtml(train.tag) + ")</small>" : "") +
+                "</td>" +
+                "<td>" +
+                escapeHtml(resolveOriginLabel(train)) +
                 "</td>" +
                 "<td>" +
                 escapeHtml(train.departure) +
@@ -1247,6 +1714,7 @@ const generateReport = () => {
                 <thead>
                     <tr>
                         <th>Train</th>
+                        <th>Origin</th>
                         <th>Departure</th>
                         <th>Speed</th>
                         <th>Distance</th>
@@ -1563,6 +2031,14 @@ const buildTrack = () => {
             );
         });
 
+        stationNodes.forEach(node => {
+            if (!node || node.km <= 0.001 || Math.abs(node.km - trackLengthKm) <= 0.001) {
+                return;
+            }
+            const markerPoint = getTrackPoint(node.km, 0);
+            createStationMarker(markerPoint, node.name, node.km, "end");
+        });
+
         applyViewportTransform();
         return;
     }
@@ -1724,6 +2200,36 @@ const buildTrack = () => {
         );
     });
 
+    stationNodes.forEach(node => {
+        if (!node || node.km <= 0.001 || Math.abs(node.km - trackLengthKm) <= 0.001) {
+            return;
+        }
+        const x = TRACK_PADDING_X + (trackLengthKm > 0 ? (node.km / trackLengthKm) * TRACK_VIEW_WIDTH : 0);
+        const markerGroup = createSvgElement("g", {
+            transform: "translate(" + x + ", 150)"
+        });
+        const marker = createSvgElement("circle", {
+            r: 10,
+            fill: "rgba(109, 248, 255, 0.85)",
+            stroke: "rgba(0, 32, 54, 0.6)",
+            "stroke-width": "2"
+        });
+        const label = createSvgElement("text", {
+            y: -18,
+            fill: "rgba(9, 14, 28, 0.95)",
+            "font-size": "11",
+            "font-weight": "600",
+            "text-anchor": "middle",
+            "letter-spacing": "0.05em"
+        });
+        label.textContent = node.name;
+        markerGroup.append(marker, label);
+        trackBase.appendChild(markerGroup);
+        attachTooltip(markerGroup, () =>
+            "<strong>" + node.name + "</strong><br>Distance: " + node.km.toFixed(1) + " km"
+        );
+    });
+
     applyViewportTransform();
 };
 
@@ -1831,6 +2337,12 @@ const handleTrackLengthChange = () => {
     renderCrossingControls();
     updateTrackLengthSummary();
     renderTrackLabels();
+    customStationNodes.forEach(node => {
+        node.km = clampDistance(node.km);
+    });
+    mergeStationNodes(collectStationNodesFromMap());
+    renderStationList();
+    collectStartNodes();
     buildTrack();
     recalcTimeline();
     render();
@@ -1843,6 +2355,44 @@ const handleTrackClick = event => {
 
     const trainLayerNode = event.target.closest("#train-layer");
     if (trainLayerNode) {
+        return;
+    }
+
+    if (event.shiftKey) {
+        const localPoint = getLocalPointFromClient(event.clientX, event.clientY);
+        let kmValue = null;
+        let projectedPoint = null;
+
+        if (usingCustomTrackPath && trackPathElement && trackPathLength > 0) {
+            const projection = projectPointToTrackPath(localPoint);
+            if (projection) {
+                kmValue = projection.km;
+                projectedPoint = projection.point;
+            }
+        } else {
+            const normalized = (localPoint.x - TRACK_PADDING_X) / TRACK_VIEW_WIDTH;
+            if (normalized >= 0 && normalized <= 1) {
+                kmValue = clampDistance(normalized * trackLengthKm);
+                projectedPoint = getTrackPoint(kmValue, 0);
+            }
+        }
+
+        if (kmValue == null) {
+            return;
+        }
+
+        const defaultLabel = "Start Node " + (startNodes.length + 1);
+        const nameInput = window.prompt("Label for new start node:", defaultLabel);
+        if (nameInput !== null) {
+            const newNode = addStartNode(nameInput.trim(), kmValue, projectedPoint);
+            finalizeStartNodes();
+            if (startNodesSelect && newNode) {
+                const option = Array.from(startNodesSelect.options).find(opt => opt.value === newNode.id);
+                if (option) {
+                    option.selected = true;
+                }
+            }
+        }
         return;
     }
 
@@ -1944,6 +2494,7 @@ const handleStationInput = () => {
     };
     updateTrackLengthSummary();
     renderTrackLabels();
+    collectStartNodes();
     buildTrack();
 };
 
@@ -2033,12 +2584,57 @@ if (conflictClearBtn) {
 if (reportGenerateBtn) {
     reportGenerateBtn.addEventListener("click", generateReport);
 }
+if (stationListContainer) {
+    stationListContainer.addEventListener("input", handleStationListInput);
+    stationListContainer.addEventListener("click", handleStationListClick);
+}
+if (addStationBtn) {
+    addStationBtn.addEventListener("click", () => {
+        const defaultName = "Station " + (customStationNodes.length + 1);
+        const defaultKm = clampDistance(trackLengthKm / Math.max(customStationNodes.length + 2, 2));
+        addCustomStationNode(defaultName, defaultKm);
+        mergeStationNodes(collectStationNodesFromMap());
+        renderStationList();
+        collectStartNodes();
+        buildTrack();
+        render();
+    });
+}
+if (startNodesApplyBtn) {
+    startNodesApplyBtn.addEventListener("click", () => {
+        if (!startNodesSelect) {
+            return;
+        }
+        const nodeIds = Array.from(startNodesSelect.selectedOptions)
+            .map(option => option.value)
+            .filter(Boolean);
+        applyStartNodesSequentially(nodeIds);
+    });
+}
+if (startNodesClearBtn) {
+    startNodesClearBtn.addEventListener("click", () => {
+        if (startNodesSelect) {
+            startNodesSelect.selectedIndex = -1;
+        }
+        clearActiveTrainStartNode();
+    });
+}
 
 const serializeScenario = () => ({
     version: 1,
     generatedAt: new Date().toISOString(),
     trackLengthKm,
     stationNames,
+    stations: customStationNodes.map(node => ({
+        id: node.id,
+        name: node.name,
+        km: node.km
+    })),
+    startNodes: startNodes.map(node => ({
+        id: node.id,
+        name: node.name,
+        km: node.km
+    })),
     crossingState: crossingState.map(state => ({ ratio: state.ratio, label: state.label })),
     playbackSpeed: playbackMultiplier,
     trains: trains.map(train => ({
@@ -2049,6 +2645,7 @@ const serializeScenario = () => ({
         cars: train.cars,
         carLength: train.carLength,
         manualPositionKm: train.manualPositionKm,
+        startNodeId: train.startNodeId,
         color: train.color,
         tag: train.tag
     }))
@@ -2060,6 +2657,12 @@ const applyScenario = scenario => {
     }
 
     clearConflictLog();
+    scenarioStartNodeFallback = Array.isArray(scenario.startNodes)
+        ? scenario.startNodes.map(node => ({
+            name: node?.name || "Start Node",
+            km: clampDistance(Number.isFinite(node?.km) ? node.km : 0)
+        }))
+        : [];
 
     if (Number.isFinite(Number(scenario.trackLengthKm)) && Number(scenario.trackLengthKm) > 0) {
         trackLengthKm = Number(scenario.trackLengthKm);
@@ -2076,6 +2679,28 @@ const applyScenario = scenario => {
     }
     stationStartInput.value = stationNames.start;
     stationEndInput.value = stationNames.end;
+
+    customStationNodes.length = 0;
+    if (Array.isArray(scenario.stations)) {
+        scenario.stations.forEach((station, index) => {
+            if (!station) {
+                return;
+            }
+            const km = clampDistance(Number(station.km) || 0);
+            const name =
+                (station.name && String(station.name).trim()) ||
+                "Station " + (index + 1);
+            const id =
+                station.id ||
+                makeStationNodeId(name, km) + "-custom-" + index;
+            customStationNodes.push({
+                id,
+                name,
+                km,
+                source: "custom"
+            });
+        });
+    }
 
     const importedCrossings = scenario.crossingState || scenario.crossings;
     if (Array.isArray(importedCrossings)) {
@@ -2107,6 +2732,10 @@ const applyScenario = scenario => {
     }
     renderCrossingControls();
 
+    mergeStationNodes(collectStationNodesFromMap());
+    renderStationList();
+    collectStartNodes();
+
     if (Number.isFinite(Number(scenario.playbackSpeed))) {
         const parsedSpeed = Number(scenario.playbackSpeed);
         playbackMultiplier = Math.min(Math.max(parsedSpeed, 0.25), 4);
@@ -2117,6 +2746,24 @@ const applyScenario = scenario => {
         playbackSpeedInput.value = playbackMultiplier;
     }
     updatePlaybackSpeedLabel();
+
+    if (Array.isArray(scenario.startNodes)) {
+        scenario.startNodes.forEach(node => {
+            const name = node.name || "Start Node";
+            const km = clampDistance(Number.isFinite(node.km) ? node.km : 0);
+            const id = node.id || makeStartNodeId(name, km);
+            if (!startNodes.some(existing => existing.id === id)) {
+                startNodes.push({
+                    id,
+                    name,
+                    km,
+                    point: getTrackPoint(km, 0)
+                });
+            }
+        });
+        startNodes.sort((a, b) => a.km - b.km);
+        refreshStartNodeSelectOptions();
+    }
 
     const scenarioTrains = Array.isArray(scenario.trains)
         ? scenario.trains.slice(0, MAX_TRAINS)
@@ -2229,6 +2876,9 @@ const applyMetadata = metadata => {
     }
 
     renderCrossingControls();
+    mergeStationNodes(collectStationNodesFromMap());
+    renderStationList();
+    collectStartNodes();
     buildTrack();
 };
 
@@ -2290,6 +2940,9 @@ renderCrossingControls();
 updateTrackLengthSummary();
 renderTrackLabels();
 updateTrackPath();
+mergeStationNodes(collectStationNodesFromMap());
+renderStationList();
+collectStartNodes();
 applyViewportTransform();
 if (playbackSpeedInput) {
     playbackSpeedInput.value = playbackMultiplier;

@@ -60,10 +60,29 @@
                             Origin Station
                             <input id="station-start-input" type="text" maxlength="60" value="Origin Terminal">
                         </label>
+                        <div class="multi-start-control">
+                            <label>
+                                Starting Nodes
+                                <div class="multi-start-select">
+                                    <select id="start-nodes-select" multiple></select>
+                                    <div class="multi-start-actions">
+                                        <button id="start-nodes-apply" class="secondary" type="button">Apply</button>
+                                        <button id="start-nodes-clear" class="secondary" type="button">Clear</button>
+                                    </div>
+                                </div>
+                            </label>
+                            <small class="hint-text">
+                                Choose one or more map nodes as origin points. Shift-click to multi-select trains for bulk assignment.
+                            </small>
+                        </div>
                         <label>
                             Destination Station
                             <input id="station-end-input" type="text" maxlength="60" value="Summit Station">
                         </label>
+                    </div>
+                    <div class="field-row">
+                        <div id="station-list" class="station-list"></div>
+                        <button id="add-station" class="secondary" type="button">Add Station</button>
                     </div>
                     <div class="field-row">
                         <label>
