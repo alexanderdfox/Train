@@ -64,6 +64,7 @@ const zoomResetBtn = document.getElementById("zoom-reset");
 const conflictFilterSelect = document.getElementById("conflict-filter");
 const conflictLogList = document.getElementById("conflict-log-list");
 const conflictClearBtn = document.getElementById("conflict-clear");
+const reportGenerateBtn = document.getElementById("report-generate");
 
 trainCountInput.max = MAX_TRAINS;
 
@@ -137,6 +138,14 @@ const escapeAttribute = value =>
         .replace(/"/g, "&quot;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+
+const escapeHtml = value =>
+    String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 
 const showTooltip = (html, clientX, clientY) => {
     tooltipElement.innerHTML = html;
@@ -882,7 +891,7 @@ const recordConflicts = (warnings, minute) => {
             return;
         }
         conflictLogKeys.add(key);
-        const deficitMeters = Math.max(0, SAFE_DISTANCE - warning.gapMeters);
+        const deficitMeters = Math.max(0, SAFE_DISTANCE * 1000 - warning.gapMeters);
         let suggestion = "";
         if (deficitMeters > 0) {
             const trailing =
@@ -1005,6 +1014,247 @@ const clearConflictLog = () => {
     activeConflictFilter = "all";
     refreshConflictFilterOptions();
     renderConflictLog(Math.round(Number(timeSlider.value) || 0));
+};
+
+const buildReportTableRows = scenario => {
+    return scenario.trains
+        .map(train => {
+            const colorBlock =
+                '<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:' +
+                escapeHtml(train.color || "#1c8ef9") +
+                ';border:1px solid rgba(0,0,0,0.18);margin-right:8px;"></span>';
+            return (
+                "<tr>" +
+                "<td>" +
+                colorBlock +
+                escapeHtml(train.name) +
+                (train.tag ? " <small>(" + escapeHtml(train.tag) + ")</small>" : "") +
+                "</td>" +
+                "<td>" +
+                escapeHtml(train.departure) +
+                "</td>" +
+                "<td>" +
+                Number(train.speed || 0).toFixed(0) +
+                " km/h</td>" +
+                "<td>" +
+                Number(train.distance || 0).toFixed(1) +
+                " km</td>" +
+                "<td>" +
+                escapeHtml(String(train.cars || "")) +
+                "</td>" +
+                "<td>" +
+                escapeHtml(String(train.carLength || "")) +
+                " m</td>" +
+                "</tr>"
+            );
+        })
+        .join("");
+};
+
+const buildConflictReportRows = () => {
+    if (!conflictLog.length) {
+        return '<tr><td colspan="4">No conflicts recorded.</td></tr>';
+    }
+    const rows = conflictLog
+        .slice()
+        .sort((a, b) => a.minute - b.minute)
+        .map(entry => {
+            return (
+                "<tr>" +
+                "<td>" +
+                escapeHtml(formatTime(entry.minute)) +
+                "</td>" +
+                "<td>" +
+                escapeHtml(entry.trains.join(" ↔ ")) +
+                "</td>" +
+                "<td>" +
+                Math.max(0, Math.round(entry.gapMeters)) +
+                " m</td>" +
+                "<td>" +
+                escapeHtml(entry.suggestion || "Review spacing") +
+                "</td>" +
+                "</tr>"
+            );
+        })
+        .join("");
+    return rows;
+};
+
+const generateReport = () => {
+    const reportWindow = window.open("", "_blank", "width=1000,height=760");
+    if (!reportWindow) {
+        alert("Unable to open report window. Please allow popups for this site.");
+        return;
+    }
+
+    const scenarioSnapshot = serializeScenario();
+    const trainsRows = buildReportTableRows(scenarioSnapshot);
+    const conflictRows = buildConflictReportRows();
+
+    const reportStyles = `
+        body {
+            font-family: "Space Grotesk", system-ui, sans-serif;
+            margin: 40px;
+            color: #091020;
+        }
+        h1, h2, h3 {
+            letter-spacing: 0.08em;
+        }
+        h1 {
+            margin-bottom: 12px;
+        }
+        h2 {
+            margin-top: 32px;
+            margin-bottom: 12px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 24px;
+        }
+        th, td {
+            border: 1px solid rgba(9, 16, 32, 0.08);
+            padding: 10px 12px;
+            text-align: left;
+        }
+        th {
+            background: rgba(9, 16, 32, 0.06);
+            letter-spacing: 0.06em;
+        }
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+        .meta-item {
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: rgba(9, 16, 32, 0.06);
+        }
+        .meta-item strong {
+            display: block;
+            font-size: 0.9rem;
+            letter-spacing: 0.08em;
+            margin-bottom: 6px;
+        }
+        .footer-note {
+            margin-top: 32px;
+            font-size: 0.85rem;
+            color: rgba(9, 16, 32, 0.6);
+        }
+        @media print {
+            body {
+                margin: 20px;
+            }
+            .no-print {
+                display: none !important;
+            }
+        }
+    `;
+
+    const reportHtml = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="utf-8">
+            <title>Rail Flow Scenario Report</title>
+            <style>${reportStyles}</style>
+        </head>
+        <body>
+            <h1>Rail Flow Scenario Report</h1>
+            <div class="meta-grid">
+                <div class="meta-item">
+                    <strong>Generated</strong>
+                    <span>${escapeHtml(new Date().toLocaleString())}</span>
+                </div>
+                <div class="meta-item">
+                    <strong>Track Length</strong>
+                    <span>${Number(scenarioSnapshot.trackLengthKm || 0).toFixed(1)} km</span>
+                </div>
+                <div class="meta-item">
+                    <strong>Stations</strong>
+                    <span>${escapeHtml(stationNames.start)} → ${escapeHtml(stationNames.end)}</span>
+                </div>
+                <div class="meta-item">
+                    <strong>Playback Speed</strong>
+                    <span>${playbackMultiplier.toFixed(2)}×</span>
+                </div>
+                <div class="meta-item">
+                    <strong>Viewport</strong>
+                    <span>${usingCustomTrackPath ? "Custom SVG path" : "Default straight line"}</span>
+                </div>
+            </div>
+            <h2>Train Roster</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Train</th>
+                        <th>Departure</th>
+                        <th>Speed</th>
+                        <th>Distance</th>
+                        <th>Cars</th>
+                        <th>Car Length</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${trainsRows || '<tr><td colspan="6">No trains defined.</td></tr>'}
+                </tbody>
+            </table>
+            <h2>Conflict Log</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Trains</th>
+                        <th>Gap</th>
+                        <th>Suggested Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${conflictRows}
+                </tbody>
+            </table>
+            <h2>Crossings</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>Distance</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${crossings.length
+                        ? crossings
+                              .map(
+                                  crossing =>
+                                      "<tr><td>" +
+                                      escapeHtml(crossing.label || "Crossing") +
+                                      "</td><td>" +
+                                      crossing.km.toFixed(1) +
+                                      " km</td></tr>"
+                              )
+                              .join("")
+                        : '<tr><td colspan="2">No crossings defined.</td></tr>'}
+                </tbody>
+            </table>
+            <button class="no-print" onclick="window.print()">Print Report</button>
+            <div class="footer-note">
+                Generated by Rail Flow Visual Calculator.
+            </div>
+        </body>
+        </html>
+    `;
+
+    reportWindow.document.open();
+    reportWindow.document.write(reportHtml);
+    reportWindow.document.close();
+    reportWindow.focus();
+    try {
+        setTimeout(() => reportWindow.print(), 250);
+    } catch (error) {
+        console.warn("Auto print failed:", error);
+    }
 };
 
 const render = () => {
@@ -1721,6 +1971,9 @@ if (conflictClearBtn) {
     conflictClearBtn.addEventListener("click", () => {
         clearConflictLog();
     });
+}
+if (reportGenerateBtn) {
+    reportGenerateBtn.addEventListener("click", generateReport);
 }
 
 const serializeScenario = () => ({

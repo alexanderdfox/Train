@@ -1,4 +1,4 @@
 # Follow-up Ideas
 
-1. Generate printable / shareable reports that snapshot the timetable, warnings, and map overlays.
+- All planned follow-up items have been delivered. Add new ideas here when ready.
 
