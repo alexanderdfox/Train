@@ -91,6 +91,7 @@ let playing = false;
 let trackPathElement = null;
 let trackPathLength = 0;
 let usingCustomTrackPath = false;
+let trackPathElements = [];
 let playbackMultiplier = 1;
 let zoomLevel = 1;
 let panX = 0;
@@ -746,6 +747,7 @@ const updateTrackPath = () => {
     trackPathElement = null;
     trackPathLength = 0;
     usingCustomTrackPath = false;
+    trackPathElements = [];
 
     if (!mapLayer) {
         mergeStationNodes([]);
@@ -763,35 +765,42 @@ const updateTrackPath = () => {
         '#rail-track'
     ];
 
-    let candidate = null;
-    for (const selector of prioritizedSelectors) {
-        candidate = mapLayer.querySelector(selector);
-        if (candidate && typeof candidate.getTotalLength === "function") {
-            break;
-        }
-        candidate = null;
-    }
+    const prioritizedMatches = prioritizedSelectors
+        .map(selector =>
+            Array.from(mapLayer.querySelectorAll(selector)).filter(
+                el => typeof el.getTotalLength === "function"
+            )
+        )
+        .flat();
 
-    if (!candidate) {
-        candidate = Array.from(mapLayer.querySelectorAll("path, polyline")).find(el =>
-            typeof el.getTotalLength === "function"
-        ) || null;
-    }
+    const fallbackMatches = Array.from(mapLayer.querySelectorAll("path, polyline")).filter(
+        el => typeof el.getTotalLength === "function"
+    );
 
-    if (candidate) {
-        const length = candidate.getTotalLength?.() || 0;
+    const combined = [...new Set([...prioritizedMatches, ...fallbackMatches])];
+
+    combined.forEach(el => {
+        const length = el.getTotalLength?.() || 0;
         if (length > 0) {
-            trackPathElement = candidate;
-            trackPathLength = length;
-            usingCustomTrackPath = true;
-            const override =
-                parseFloat(candidate.getAttribute("data-track-length-km")) ||
-                parseFloat(candidate.getAttribute("data-track-length")) ||
-                parseFloat(candidate.dataset?.trackLengthKm);
-            if (Number.isFinite(override) && override > 0 && Math.abs(override - trackLengthKm) > 0.01) {
-                trackLengthInput.value = override;
-                handleTrackLengthChange();
-            }
+            trackPathElements.push({
+                element: el,
+                length
+            });
+        }
+    });
+
+    if (trackPathElements.length) {
+        const primary = trackPathElements[0];
+        trackPathElement = primary.element;
+        trackPathLength = primary.length;
+        usingCustomTrackPath = true;
+        const override =
+            parseFloat(trackPathElement.getAttribute("data-track-length-km")) ||
+            parseFloat(trackPathElement.getAttribute("data-track-length")) ||
+            parseFloat(trackPathElement.dataset?.trackLengthKm);
+        if (Number.isFinite(override) && override > 0 && Math.abs(override - trackLengthKm) > 0.01) {
+            trackLengthInput.value = override;
+            handleTrackLengthChange();
         }
     }
 
@@ -850,19 +859,20 @@ const getTrackPoint = (distanceKm, laneIndex = 0) => {
     return { x, y, ratio: clampedRatio };
 };
 
-const projectPointToTrackPath = point => {
-    if (!usingCustomTrackPath || !trackPathElement || trackPathLength <= 0 || !point) {
+const projectPointToSinglePath = (pathObj, point) => {
+    if (!pathObj || !point || pathObj.length <= 0) {
         return null;
     }
-
+    const element = pathObj.element;
+    const totalLength = pathObj.length;
     const samples = 256;
     let closestLength = 0;
     let minDistSq = Number.POSITIVE_INFINITY;
 
     for (let i = 0; i <= samples; i += 1) {
-        const length = (i / samples) * trackPathLength;
-        const raw = trackPathElement.getPointAtLength(length);
-        const transformed = transformPathPoint(raw, trackPathElement);
+        const length = (i / samples) * totalLength;
+        const raw = element.getPointAtLength(length);
+        const transformed = transformPathPoint(raw, element);
         const dx = point.x - transformed.x;
         const dy = point.y - transformed.y;
         const distSq = dx * dx + dy * dy;
@@ -872,16 +882,13 @@ const projectPointToTrackPath = point => {
         }
     }
 
-    let step = trackPathLength / samples;
+    let step = totalLength / samples;
     while (step > 1) {
         let improved = false;
         for (const offset of [-step, step]) {
-            const candidateLength = Math.min(
-                Math.max(closestLength + offset, 0),
-                trackPathLength
-            );
-            const raw = trackPathElement.getPointAtLength(candidateLength);
-            const transformed = transformPathPoint(raw, trackPathElement);
+            const candidateLength = Math.min(Math.max(closestLength + offset, 0), totalLength);
+            const raw = element.getPointAtLength(candidateLength);
+            const transformed = transformPathPoint(raw, element);
             const dx = point.x - transformed.x;
             const dy = point.y - transformed.y;
             const distSq = dx * dx + dy * dy;
@@ -896,14 +903,54 @@ const projectPointToTrackPath = point => {
         }
     }
 
-    const finalPoint = transformPathPoint(
-        trackPathElement.getPointAtLength(closestLength),
-        trackPathElement
-    );
-    const km = trackLengthKm > 0 ? (closestLength / trackPathLength) * trackLengthKm : 0;
+    const finalPoint = transformPathPoint(element.getPointAtLength(closestLength), element);
     return {
-        km: clampDistance(km),
-        point: finalPoint
+        length: closestLength,
+        point: finalPoint,
+        distanceSq: minDistSq
+    };
+};
+
+const projectPointToTrackPath = point => {
+    if (!usingCustomTrackPath || !trackPathElements.length || !point) {
+        return null;
+    }
+
+    let bestProjection = null;
+    let bestIndex = 0;
+
+    trackPathElements.forEach((pathObj, index) => {
+        if (!pathObj.element || pathObj.length <= 0) {
+            return;
+        }
+        const projection = projectPointToSinglePath(pathObj, point);
+        if (!projection) {
+            return;
+        }
+        if (!bestProjection || projection.distanceSq < bestProjection.distanceSq) {
+            bestProjection = {
+                ...projection,
+                pathIndex: index
+            };
+            bestIndex = index;
+        }
+    });
+
+    if (!bestProjection) {
+        return null;
+    }
+
+    const targetPath = trackPathElements[bestIndex];
+    const ratio =
+        trackLengthKm > 0 && targetPath && targetPath.length > 0
+            ? bestProjection.length / targetPath.length
+            : 0;
+    const km = clampDistance(ratio * trackLengthKm);
+
+    return {
+        km,
+        point: bestProjection.point,
+        pathIndex: bestIndex
     };
 };
 
@@ -1940,16 +1987,38 @@ const buildTrack = () => {
         const startPoint = getTrackPoint(0, 0);
         const endPoint = getTrackPoint(trackLengthKm, 0);
 
-        const highlight = trackPathElement.cloneNode(true);
-        highlight.removeAttribute("id");
-        highlight.classList.add("track-path-highlight");
-        highlight.setAttribute("fill", "none");
-        highlight.setAttribute("stroke", "rgba(109, 248, 255, 0.5)");
-        highlight.setAttribute("stroke-width", "8");
-        highlight.setAttribute("stroke-linecap", "round");
-        highlight.setAttribute("stroke-linejoin", "round");
-        highlight.setAttribute("pointer-events", "none");
-        trackBase.appendChild(highlight);
+        trackPathElements.forEach((pathObj, index) => {
+            if (!pathObj.element) {
+                return;
+            }
+            const ballast = pathObj.element.cloneNode(true);
+            ballast.removeAttribute("id");
+            ballast.setAttribute("fill", "none");
+            ballast.setAttribute(
+                "stroke",
+                index === 0 ? "rgba(15, 23, 42, 0.65)" : "rgba(20, 32, 52, 0.55)"
+            );
+            ballast.setAttribute("stroke-width", index === 0 ? "14" : "10");
+            ballast.setAttribute("stroke-linecap", "round");
+            ballast.setAttribute("stroke-linejoin", "round");
+            ballast.setAttribute("pointer-events", "none");
+
+            const rail = pathObj.element.cloneNode(true);
+            rail.removeAttribute("id");
+            rail.classList.add("track-path-highlight");
+            rail.setAttribute("fill", "none");
+            rail.setAttribute(
+                "stroke",
+                index === 0 ? "rgba(109, 248, 255, 0.75)" : "rgba(128, 178, 255, 0.55)"
+            );
+            rail.setAttribute("stroke-width", index === 0 ? "6" : "4");
+            rail.setAttribute("stroke-linecap", "round");
+            rail.setAttribute("stroke-linejoin", "round");
+            rail.setAttribute("pointer-events", "none");
+
+            trackBase.appendChild(ballast);
+            trackBase.appendChild(rail);
+        });
 
         const createStationMarker = (point, label, distanceKm, align = "end") => {
             const group = createSvgElement("g", {
@@ -2287,7 +2356,12 @@ const handleMapUpload = event => {
             }
 
             if (usingCustomTrackPath) {
-                statusMessage += " • Track path detected for live animation.";
+                const pathCount = trackPathElements.length;
+                if (pathCount > 1) {
+                    statusMessage += ` • ${pathCount} track paths detected for animation.`;
+                } else {
+                    statusMessage += " • Track path detected for live animation.";
+                }
             } else {
                 statusMessage += " • Add data-track=\"true\" to your SVG path to animate trains along it.";
             }
