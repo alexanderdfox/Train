@@ -1,3 +1,20 @@
+/**
+ * @fileoverview Main application logic for the Rail Flow visual calculator.
+ *
+ * Responsibilities include:
+ * - Bootstrapping DOM references and managing UI interactions.
+ * - Parsing/stylising uploaded SVG maps and computing track geometry.
+ * - Simulating train motion, detecting spacing conflicts, and rendering the viewport.
+ * - Importing/exporting scenarios, metadata, and generating reports.
+ *
+ * The file is organised into sections separated by banner comments. When adding new
+ * features, prefer to extend the relevant section to keep the code navigable.
+ */
+
+// ============================================================================
+// Constants & Configuration
+// ============================================================================
+
 const SAFE_DISTANCE_KM = 0.1; // 100 m
 const DEFAULT_TRACK_LENGTH = 240;
 const DEFAULT_CROSSINGS = [60, 120, 180, 220];
@@ -56,6 +73,10 @@ const DEFAULT_PATH_DEFINITIONS = [
     }
 ];
 
+// ============================================================================
+// Geometry Helpers
+// ============================================================================
+
 const getFallbackPathPoint = (pathIndex, ratio) => {
     const definition = DEFAULT_PATH_DEFINITIONS[pathIndex] || DEFAULT_PATH_DEFINITIONS[0];
     const clamped = Math.min(Math.max(ratio, 0), 1);
@@ -94,6 +115,69 @@ const projectPointToFallbackPaths = point => {
     });
     return best;
 };
+
+// ============================================================================
+// Map Styling & SVG Management
+// ============================================================================
+
+const stylizeCustomTrackElement = (element, index) => {
+    if (!element || element.dataset.railStyled === "true" || !element.parentNode) {
+        return;
+    }
+    const parent = mapTrackGroupRef || element.parentNode;
+    const ballast = element.cloneNode(true);
+    ballast.removeAttribute("id");
+    ballast.classList.add("map-track-ballast");
+    ballast.setAttribute("fill", "none");
+    ballast.setAttribute(
+        "stroke",
+        index === 0 ? "rgba(15, 23, 42, 0.65)" : "rgba(20, 32, 52, 0.55)"
+    );
+    ballast.setAttribute("stroke-width", index === 0 ? "14" : "10");
+    ballast.setAttribute("stroke-linecap", "round");
+    ballast.setAttribute("stroke-linejoin", "round");
+    ballast.setAttribute("pointer-events", "none");
+
+    const rail = element.cloneNode(true);
+    rail.removeAttribute("id");
+    rail.classList.add("map-track-rail");
+    rail.setAttribute("fill", "none");
+    rail.setAttribute(
+        "stroke",
+        index === 0 ? "rgba(109, 248, 255, 0.75)" : "rgba(128, 178, 255, 0.55)"
+    );
+    rail.setAttribute("stroke-width", index === 0 ? "6" : "4");
+    rail.setAttribute("stroke-linecap", "round");
+    rail.setAttribute("stroke-linejoin", "round");
+    rail.setAttribute("pointer-events", "none");
+
+    if (parent && typeof parent.appendChild === "function") {
+        parent.appendChild(ballast);
+        parent.appendChild(rail);
+    } else if (element.parentNode) {
+        element.parentNode.insertBefore(ballast, element);
+        element.parentNode.insertBefore(rail, element);
+    }
+    element.setAttribute("stroke", "none");
+    element.setAttribute("fill", "none");
+    element.setAttribute("opacity", "0");
+    element.dataset.railStyled = "true";
+};
+
+const ensureMapTrackGroup = rootSvg => {
+    if (!rootSvg) {
+        mapTrackGroupRef = null;
+        return null;
+    }
+    let trackGroup = rootSvg.querySelector("#track-base");
+    if (!trackGroup) {
+        trackGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        trackGroup.setAttribute("id", "track-base");
+        rootSvg.insertBefore(trackGroup, rootSvg.firstChild);
+    }
+    mapTrackGroupRef = trackGroup;
+    return trackGroup;
+};
 const DEFAULT_STATIONS = {
     start: "Origin Terminal",
     end: "Summit Station"
@@ -111,6 +195,10 @@ const DEFAULT_TRAINS = [
     { name: "I", departure: "11:05", speed: 88, distance: 240, cars: 11, carLength: 21, color: "#00b4d8", tag: "Coastal" },
     { name: "J", departure: "11:25", speed: 75, distance: 240, cars: 8, carLength: 22, color: "#f72585", tag: "Night" }
 ];
+
+// ============================================================================
+// DOM References
+// ============================================================================
 
 const trainCountInput = document.getElementById("train-count");
 const trainCountLabel = document.getElementById("train-count-label");
@@ -132,7 +220,7 @@ const trackLabels = document.getElementById("track-labels");
 const crossingList = document.getElementById("crossing-list");
 const trackSvg = document.getElementById("track-svg");
 const mapLayer = document.getElementById("map-layer");
-const trackBase = document.getElementById("track-base");
+const trackBase = document.getElementById("track-base-root");
 const trainLayer = document.getElementById("train-layer");
 const warningsPanel = document.getElementById("warnings-panel");
 const scenarioSaveBtn = document.getElementById("scenario-save");
@@ -166,6 +254,10 @@ const controlsTabPanels = document.querySelectorAll(".controls-tab-panel");
 
 trainCountInput.max = MAX_TRAINS;
 
+// ============================================================================
+// Mutable Application State
+// ============================================================================
+
 let stationNames = { ...DEFAULT_STATIONS };
 let stationNodes = [];
 let trackLengthKm = DEFAULT_TRACK_LENGTH;
@@ -186,6 +278,7 @@ let trackPathElement = null;
 let trackPathLength = 0;
 let usingCustomTrackPath = false;
 let trackPathElements = [];
+let mapTrackGroupRef = null;
 let playbackMultiplier = 1;
 let zoomLevel = 1;
 let panX = 0;
@@ -250,6 +343,10 @@ const escapeHtml = value =>
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
+
+// ============================================================================
+// Station & Start Node Management
+// ============================================================================
 
 const makeStationNodeId = (name, km) => makeStartNodeId(name, km);
 
@@ -883,11 +980,21 @@ const setScenarioStatus = (message, isError = false) => {
     scenarioStatus.style.color = isError ? "var(--accent-strong)" : "var(--text-secondary)";
 };
 
+/**
+ * Parses the currently loaded SVG map, discovers track geometry, and prepares
+ * state for train simulation and rendering. During processing the function:
+ * - Resets previously cached path information.
+ * - Ensures a dedicated `<g id="track-base">` exists for stylised rails.
+ * - Adds each eligible path/polyline/line to `trackPathElements`.
+ * - Stylises map geometry so uploaded tracks adopt the Rail Flow aesthetic.
+ * - Rebuilds station annotations and start nodes derived from the SVG.
+ */
 const updateTrackPath = () => {
     trackPathElement = null;
     trackPathLength = 0;
     usingCustomTrackPath = false;
     trackPathElements = [];
+    mapTrackGroupRef = null;
 
     if (!mapLayer) {
         mergeStationNodes([]);
@@ -913,19 +1020,25 @@ const updateTrackPath = () => {
         )
         .flat();
 
-    const fallbackMatches = Array.from(mapLayer.querySelectorAll("path, polyline")).filter(
+    const fallbackMatches = Array.from(mapLayer.querySelectorAll("path, polyline, line")).filter(
         el => typeof el.getTotalLength === "function"
     );
 
     const combined = [...new Set([...prioritizedMatches, ...fallbackMatches])];
+    const rootSvg = mapLayer.querySelector("svg");
+    const mapTrackGroup = ensureMapTrackGroup(rootSvg);
 
     combined.forEach(el => {
         const length = el.getTotalLength?.() || 0;
         if (length > 0) {
+            if (mapTrackGroup && el.parentNode !== mapTrackGroup) {
+                mapTrackGroup.appendChild(el);
+            }
             trackPathElements.push({
                 element: el,
                 length
             });
+            stylizeCustomTrackElement(el, trackPathElements.length - 1);
         }
     });
 
@@ -1159,64 +1272,126 @@ const isRedColor = value => {
         normalized === "red";
 };
 
+/**
+ * Derives crossing positions from an uploaded SVG by inspecting stylised
+ * geometry and circle markers. The function projects candidates onto the
+ * nearest known track path (custom or fallback) and returns normalised ratios.
+ *
+ * @param {SVGSVGElement} svg - Parsed SVG root containing the uploaded map.
+ * @returns {Array<{ratio:number, pathIndex:number, label: string|null>>}
+ */
 const deriveCrossingRatiosFromSvg = svg => {
     try {
-        const candidates = Array.from(svg.querySelectorAll("*")).filter(el =>
+        const colorCandidates = Array.from(svg.querySelectorAll("*")).filter(el =>
             isRedColor(el.getAttribute("stroke")) || isRedColor(el.getAttribute("fill"))
         );
-        if (!candidates.length) {
-            return [];
+        const circleCandidates = Array.from(svg.querySelectorAll("circle"));
+
+        const entries = [];
+
+        const addEntry = entry => {
+            if (!entry) {
+                return;
+            }
+            const existing = entries.find(
+                candidate =>
+                    candidate.pathIndex === entry.pathIndex &&
+                    Math.abs(candidate.ratio - entry.ratio) < 0.01
+            );
+            if (!existing) {
+                entries.push(entry);
+            } else if (!existing.label && entry.label) {
+                existing.label = entry.label;
+            }
+        };
+
+        colorCandidates.forEach(el => {
+            let bbox;
+            try {
+                bbox = el.getBBox();
+            } catch (error) {
+                return;
+            }
+            if (!bbox || (bbox.width === 0 && bbox.height === 0)) {
+                return;
+            }
+            const centerPoint = transformPathPoint(
+                {
+                    x: bbox.x + bbox.width / 2,
+                    y: bbox.y + bbox.height / 2
+                },
+                el
+            );
+            let ratio = null;
+            let pathIndex = 0;
+            const projection = projectPointToTrackPath(centerPoint);
+            if (projection) {
+                ratio = trackLengthKm > 0 ? projection.km / trackLengthKm : 0;
+                pathIndex = projection.pathIndex || 0;
+            } else {
+                const fallbackProjection = projectPointToFallbackPaths(centerPoint);
+                if (fallbackProjection) {
+                    ratio = fallbackProjection.ratio;
+                    pathIndex = fallbackProjection.pathIndex || 0;
+                }
+            }
+            if (!Number.isFinite(ratio)) {
+                return;
+            }
+            addEntry({
+                ratio: Math.min(Math.max(ratio, 0), 1),
+                pathIndex,
+                label: null
+            });
+        });
+
+        circleCandidates.forEach((circle, idx) => {
+            let cx = parseFloat(circle.getAttribute("cx"));
+            let cy = parseFloat(circle.getAttribute("cy"));
+            if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+                const bbox = circle.getBBox?.();
+                if (bbox) {
+                    cx = bbox.x + bbox.width / 2;
+                    cy = bbox.y + bbox.height / 2;
+                }
+            }
+            if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+                return;
+            }
+            const center = transformPathPoint({ x: cx, y: cy }, circle);
+            let ratio = null;
+            let pathIndex = 0;
+            const projection = projectPointToTrackPath(center);
+            if (projection) {
+                ratio = trackLengthKm > 0 ? projection.km / trackLengthKm : 0;
+                pathIndex = projection.pathIndex || 0;
+            } else {
+                const fallbackProjection = projectPointToFallbackPaths(center);
+                if (fallbackProjection) {
+                    ratio = fallbackProjection.ratio;
+                    pathIndex = fallbackProjection.pathIndex || 0;
+                }
+            }
+            if (!Number.isFinite(ratio)) {
+                return;
+            }
+            const label =
+                circle.getAttribute("data-label") ||
+                circle.getAttribute("data-crossing") ||
+                circle.getAttribute("id") ||
+                circle.getAttribute("name") ||
+                `Circle ${idx + 1}`;
+            addEntry({
+                ratio: Math.min(Math.max(ratio, 0), 1),
+                pathIndex,
+                label
+            });
+        });
+
+        if (entries.length) {
+            return entries.sort((a, b) => a.ratio - b.ratio);
         }
 
-        const projected = candidates
-            .map(el => {
-                let bbox;
-                try {
-                    bbox = el.getBBox();
-                } catch (error) {
-                    return null;
-                }
-                if (!bbox || (bbox.width === 0 && bbox.height === 0)) {
-                    return null;
-                }
-                const centerPoint = transformPathPoint(
-                    {
-                        x: bbox.x + bbox.width / 2,
-                        y: bbox.y + bbox.height / 2
-                    },
-                    el
-                );
-                const projection = projectPointToTrackPath(centerPoint);
-                if (!projection) {
-                    return null;
-                }
-                const ratio = trackLengthKm > 0 ? projection.km / trackLengthKm : 0;
-                return {
-                    ratio: Math.min(Math.max(ratio, 0), 1),
-                    pathIndex: projection.pathIndex
-                };
-            })
-            .filter(Boolean);
-
-        if (projected.length) {
-            const uniques = [];
-            projected
-                .sort((a, b) => a.ratio - b.ratio)
-                .forEach(entry => {
-                    if (
-                        !uniques.some(
-                            existing =>
-                                existing.pathIndex === entry.pathIndex &&
-                                Math.abs(existing.ratio - entry.ratio) < 0.01
-                        )
-                    ) {
-                        uniques.push(entry);
-                    }
-                });
-            return uniques;
-        }
-
-        // Fallback to width-based distribution if projection fails.
         const viewBox = svg.viewBox && svg.viewBox.baseVal;
         const width = viewBox && viewBox.width
             ? viewBox.width
@@ -1227,7 +1402,7 @@ const deriveCrossingRatiosFromSvg = svg => {
             return [];
         }
 
-        const ratios = candidates
+        const ratios = colorCandidates
             .map(el => {
                 const bbox = el.getBBox();
                 if (!bbox || (bbox.width === 0 && bbox.height === 0)) {
@@ -1252,7 +1427,8 @@ const deriveCrossingRatiosFromSvg = svg => {
             });
         return uniqueRatios.map(ratio => ({
             ratio,
-            pathIndex: 0
+            pathIndex: 0,
+            label: null
         }));
     } catch (error) {
         console.warn("Failed to derive crossings from SVG", error);
@@ -1538,6 +1714,10 @@ const parseTimeToMinutes = hhmm => {
     const [h, m] = hhmm.split(":").map(Number);
     return h * 60 + m;
 };
+
+// ============================================================================
+// Train State & Simulation Calculations
+// ============================================================================
 
 const deriveTrainState = train => {
     const departureMinutes = parseTimeToMinutes(train.departure);
@@ -2081,6 +2261,10 @@ const generateReport = () => {
         console.warn("Auto print failed:", error);
     }
 };
+
+// ============================================================================
+// Rendering Pipeline
+// ============================================================================
 
 const render = () => {
     const minutes = Number(timeSlider.value);
@@ -2681,9 +2865,13 @@ const handleMapUpload = event => {
                 crossingState = derivedRatios.map((entry, index) => {
                     const ratio = typeof entry === "number" ? entry : entry.ratio;
                     const pathIndex = typeof entry === "object" && Number.isFinite(entry.pathIndex) ? entry.pathIndex : 0;
+                    const label =
+                        typeof entry === "object" && entry.label
+                            ? entry.label
+                            : `Crossing ${index + 1}`;
                     return {
                         ratio,
-                        label: `Crossing ${index + 1}`,
+                        label,
                         pathIndex
                     };
                 });
@@ -2692,7 +2880,7 @@ const handleMapUpload = event => {
                 statusMessage = `Loaded: ${file.name} • ${crossings.length} map crossings`;
             } else {
                 resetCrossingsToDefault();
-                statusMessage = `Loaded: ${file.name} • No red crossings detected (using defaults)`;
+                statusMessage = `Loaded: ${file.name} • No crossings detected (using defaults)`;
             }
 
             if (usingCustomTrackPath) {
@@ -2732,6 +2920,7 @@ const clearMap = () => {
     mapUploadInput.value = "";
     mapStatus.textContent = "No map uploaded.";
     mapStatus.style.color = "var(--text-secondary)";
+    mapTrackGroupRef = null;
     resetCrossingsToDefault();
     updateTrackPath();
     buildTrack();
@@ -3038,6 +3227,10 @@ if (startNodesClearBtn) {
         clearActiveTrainStartNode();
     });
 }
+
+// ============================================================================
+// Scenario Serialization & Metadata
+// ============================================================================
 
 const serializeScenario = () => ({
     version: 1,
@@ -3390,6 +3583,10 @@ if (controlsTabButtons.length && controlsTabPanels.length) {
         });
     });
 }
+
+// ============================================================================
+// Event Wiring
+// ============================================================================
 
 scenarioSaveBtn.addEventListener("click", handleScenarioSave);
 scenarioLoadBtn.addEventListener("click", () => scenarioLoadInput.click());

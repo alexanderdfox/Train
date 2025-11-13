@@ -737,6 +737,22 @@ button:focus-visible {
     color: var(--accent-strong);
 }
 
+.map-track-ballast,
+.map-track-rail {
+    pointer-events: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.map-track-ballast {
+    filter: url(#glow);
+    opacity: 0.85;
+}
+
+.map-track-rail {
+    opacity: 0.95;
+}
+
 .cross-icon::before,
 .cross-icon::after {
     content: "";
