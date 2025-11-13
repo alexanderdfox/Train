@@ -11,16 +11,16 @@ const DEFAULT_STATIONS = {
 };
 
 const DEFAULT_TRAINS = [
-    { name: "A", departure: "08:00", speed: 80, distance: 240, cars: 8, carLength: 20 },
-    { name: "B", departure: "08:30", speed: 60, distance: 240, cars: 10, carLength: 25 },
-    { name: "C", departure: "09:00", speed: 100, distance: 240, cars: 6, carLength: 18 },
-    { name: "D", departure: "09:15", speed: 90, distance: 240, cars: 12, carLength: 22 },
-    { name: "E", departure: "09:45", speed: 85, distance: 240, cars: 9, carLength: 21 },
-    { name: "F", departure: "10:10", speed: 95, distance: 240, cars: 7, carLength: 19 },
-    { name: "G", departure: "10:25", speed: 70, distance: 240, cars: 10, carLength: 20 },
-    { name: "H", departure: "10:40", speed: 105, distance: 240, cars: 5, carLength: 23 },
-    { name: "I", departure: "11:05", speed: 88, distance: 240, cars: 11, carLength: 21 },
-    { name: "J", departure: "11:25", speed: 75, distance: 240, cars: 8, carLength: 22 }
+    { name: "A", departure: "08:00", speed: 80, distance: 240, cars: 8, carLength: 20, color: "#6df8ff", tag: "Express" },
+    { name: "B", departure: "08:30", speed: 60, distance: 240, cars: 10, carLength: 25, color: "#ff926c", tag: "Local" },
+    { name: "C", departure: "09:00", speed: 100, distance: 240, cars: 6, carLength: 18, color: "#63f5b2", tag: "Rapid" },
+    { name: "D", departure: "09:15", speed: 90, distance: 240, cars: 12, carLength: 22, color: "#ff4f8b", tag: "Intermodal" },
+    { name: "E", departure: "09:45", speed: 85, distance: 240, cars: 9, carLength: 21, color: "#ffd166", tag: "Regional" },
+    { name: "F", departure: "10:10", speed: 95, distance: 240, cars: 7, carLength: 19, color: "#9a6bff", tag: "Freight" },
+    { name: "G", departure: "10:25", speed: 70, distance: 240, cars: 10, carLength: 20, color: "#38a3a5", tag: "Commuter" },
+    { name: "H", departure: "10:40", speed: 105, distance: 240, cars: 5, carLength: 23, color: "#ff6f61", tag: "Bullet" },
+    { name: "I", departure: "11:05", speed: 88, distance: 240, cars: 11, carLength: 21, color: "#00b4d8", tag: "Coastal" },
+    { name: "J", departure: "11:25", speed: 75, distance: 240, cars: 8, carLength: 22, color: "#f72585", tag: "Night" }
 ];
 
 const trainCountInput = document.getElementById("train-count");
@@ -46,6 +46,17 @@ const mapLayer = document.getElementById("map-layer");
 const trackBase = document.getElementById("track-base");
 const trainLayer = document.getElementById("train-layer");
 const warningsPanel = document.getElementById("warnings-panel");
+const scenarioSaveBtn = document.getElementById("scenario-save");
+const scenarioLoadBtn = document.getElementById("scenario-load");
+const scenarioLoadInput = document.getElementById("scenario-load-input");
+const metadataExportBtn = document.getElementById("metadata-export");
+const metadataImportBtn = document.getElementById("metadata-import");
+const metadataImportInput = document.getElementById("metadata-import-input");
+const scenarioStatus = document.getElementById("scenario-status");
+const playbackSpeedInput = document.getElementById("playback-speed");
+const playbackSpeedLabel = document.getElementById("playback-speed-label");
+const scrubBackBtn = document.getElementById("scrub-back");
+const scrubForwardBtn = document.getElementById("scrub-forward");
 
 trainCountInput.max = MAX_TRAINS;
 
@@ -63,6 +74,10 @@ let maxTimelineMinutes = 180;
 let animationFrame = null;
 let lastFrameTime = null;
 let playing = false;
+let trackPathElement = null;
+let trackPathLength = 0;
+let usingCustomTrackPath = false;
+let playbackMultiplier = 1;
 
 const createSvgElement = (tag, attributes = {}) => {
     const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -73,6 +88,129 @@ const createSvgElement = (tag, attributes = {}) => {
 };
 
 const clampDistance = value => Math.max(0, Math.min(trackLengthKm, value));
+
+const updateTrainCountLabel = count => {
+    trainCountLabel.textContent = `${count} ${count === 1 ? "train" : "trains"}`;
+};
+
+const updatePlaybackSpeedLabel = () => {
+    if (!playbackSpeedLabel) {
+        return;
+    }
+    const formatted =
+        playbackMultiplier % 1 === 0
+            ? playbackMultiplier.toFixed(0)
+            : playbackMultiplier.toFixed(2);
+    playbackSpeedLabel.textContent = parseFloat(formatted).toString() + "×";
+};
+
+const escapeAttribute = value =>
+    String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+const setScenarioStatus = (message, isError = false) => {
+    if (!scenarioStatus) {
+        return;
+    }
+    scenarioStatus.textContent = message;
+    scenarioStatus.style.color = isError ? "var(--accent-strong)" : "var(--text-secondary)";
+};
+
+const updateTrackPath = () => {
+    trackPathElement = null;
+    trackPathLength = 0;
+    usingCustomTrackPath = false;
+
+    if (!mapLayer) {
+        return;
+    }
+
+    const prioritizedSelectors = [
+        '[data-track="true"]',
+        '[data-track]',
+        '[data-route="track"]',
+        '.track-path',
+        '#track-path',
+        '#rail-track'
+    ];
+
+    let candidate = null;
+    for (const selector of prioritizedSelectors) {
+        candidate = mapLayer.querySelector(selector);
+        if (candidate && typeof candidate.getTotalLength === "function") {
+            break;
+        }
+        candidate = null;
+    }
+
+    if (!candidate) {
+        candidate = Array.from(mapLayer.querySelectorAll("path, polyline")).find(el =>
+            typeof el.getTotalLength === "function"
+        ) || null;
+    }
+
+    if (candidate) {
+        const length = candidate.getTotalLength?.() || 0;
+        if (length > 0) {
+            trackPathElement = candidate;
+            trackPathLength = length;
+            usingCustomTrackPath = true;
+            return;
+        }
+    }
+};
+
+const transformPathPoint = (point, element) => {
+    let x = point.x;
+    let y = point.y;
+
+    if (!element || typeof element.getCTM !== "function") {
+        return { x, y };
+    }
+
+    const matrix = element.getCTM();
+    if (!matrix) {
+        return { x, y };
+    }
+
+    if (typeof point.matrixTransform === "function") {
+        const transformed = point.matrixTransform(matrix);
+        return { x: transformed.x, y: transformed.y };
+    }
+
+    if (trackSvg && typeof trackSvg.createSVGPoint === "function") {
+        const svgPoint = trackSvg.createSVGPoint();
+        svgPoint.x = x;
+        svgPoint.y = y;
+        const transformed = svgPoint.matrixTransform(matrix);
+        return { x: transformed.x, y: transformed.y };
+    }
+
+    return { x, y };
+};
+
+const getTrackPoint = (distanceKm, laneIndex = 0) => {
+    const clampedDistance = clampDistance(distanceKm);
+    const ratio = trackLengthKm > 0 ? clampedDistance / trackLengthKm : 0;
+    const clampedRatio = Math.min(Math.max(ratio, 0), 1);
+
+    if (usingCustomTrackPath && trackPathElement && trackPathLength > 0) {
+        const lengthAlongPath = clampedRatio * trackPathLength;
+        const rawPoint = trackPathElement.getPointAtLength(lengthAlongPath);
+        const { x, y } = transformPathPoint(rawPoint, trackPathElement);
+        return { x, y, ratio: clampedRatio };
+    }
+
+    const minY = 70;
+    const maxY = 220;
+    const laneSpacing = trains.length > 1 ? (maxY - minY) / (trains.length - 1) : 0;
+    const x = TRACK_PADDING_X + clampedRatio * TRACK_VIEW_WIDTH;
+    const y = minY + laneIndex * laneSpacing;
+    return { x, y, ratio: clampedRatio };
+};
 
 const recalcCrossings = () => {
     crossingState = crossingState
@@ -264,16 +402,46 @@ const cloneDefaultTrain = index => {
     return {
         ...template,
         name: `${prefix}${suffix}`,
-        manualPositionKm: null
+        manualPositionKm: null,
+        color: template.color || "#1c8ef9",
+        tag: template.tag || ""
     };
 };
 
-const buildTrainControls = count => {
+const prepareTrainPreset = (preset, index) => {
+    const fallback = cloneDefaultTrain(index);
+    if (!preset || typeof preset !== "object") {
+        return { ...fallback };
+    }
+
+    const normalized = {
+        ...fallback,
+        ...preset
+    };
+
+    normalized.name = preset.name || fallback.name;
+    normalized.departure = preset.departure || fallback.departure;
+    normalized.speed = Number.isFinite(Number(preset.speed)) ? Number(preset.speed) : fallback.speed;
+    normalized.distance = clampDistance(Number.isFinite(Number(preset.distance)) ? Number(preset.distance) : fallback.distance);
+    normalized.cars = Number.isFinite(Number(preset.cars)) ? Number(preset.cars) : fallback.cars;
+    normalized.carLength = Number.isFinite(Number(preset.carLength)) ? Number(preset.carLength) : fallback.carLength;
+    normalized.manualPositionKm = preset.manualPositionKm != null
+        ? clampDistance(Number(preset.manualPositionKm))
+        : null;
+    normalized.color = typeof preset.color === "string" && preset.color ? preset.color : fallback.color;
+    normalized.tag = typeof preset.tag === "string" ? preset.tag.trim() : fallback.tag;
+
+    return normalized;
+};
+
+const buildTrainControls = (count, presetTrains = null) => {
     trainControlsContainer.innerHTML = "";
     trains = [];
 
     for (let i = 0; i < count; i += 1) {
-        const train = cloneDefaultTrain(i);
+        const train = presetTrains && presetTrains[i]
+            ? prepareTrainPreset(presetTrains[i], i)
+            : cloneDefaultTrain(i);
         train.distance = clampDistance(train.distance);
         trains.push(train);
 
@@ -281,7 +449,12 @@ const buildTrainControls = count => {
         row.className = "train-row";
         row.dataset.index = i;
 
+        train.color = train.color || "#1c8ef9";
+        train.tag = typeof train.tag === "string" ? train.tag : "";
         const manualValue = train.manualPositionKm != null ? train.manualPositionKm.toFixed(2) : "";
+        const manualAttrValue = escapeAttribute(manualValue);
+        const colorValue = escapeAttribute(train.color || "#1c8ef9");
+        const tagValue = escapeAttribute(train.tag || "");
         row.innerHTML = `
             <strong>Train ${train.name}</strong>
             <label>Departure<input type="time" value="${train.departure}" data-field="departure"></label>
@@ -289,7 +462,9 @@ const buildTrainControls = count => {
             <label>Distance (km)<input type="number" min="1" value="${train.distance}" data-field="distance"></label>
             <label>Cars<input type="number" min="1" max="20" value="${train.cars}" data-field="cars"></label>
             <label>Car Length (m)<input type="number" min="5" max="40" value="${train.carLength}" data-field="carLength"></label>
-            <label>Manual Pos (km)<input type="number" min="0" step="0.1" placeholder="auto" value="${manualValue}" data-field="manualPositionKm"></label>
+            <label>Color<input type="color" value="${colorValue}" data-field="color"></label>
+            <label>Tag / Icon<input type="text" maxlength="20" placeholder="optional" value="${tagValue}" data-field="tag"></label>
+            <label>Manual Pos (km)<input type="number" min="0" step="0.1" placeholder="auto" value="${manualAttrValue}" data-field="manualPositionKm"></label>
         `;
 
         row.querySelectorAll("input").forEach(input => {
@@ -314,6 +489,7 @@ const buildTrainControls = count => {
     }
     setActiveTrain(activeTrainIndex);
 
+    updateTrainCountLabel(trains.length);
     recalcTimeline();
     render();
 };
@@ -323,6 +499,18 @@ const handleTrainInput = event => {
     const index = Number(row.dataset.index);
     setActiveTrain(index);
     const field = event.target.dataset.field;
+
+    if (field === "color") {
+        trains[index].color = event.target.value || "#1c8ef9";
+        render();
+        return;
+    }
+
+    if (field === "tag") {
+        trains[index].tag = event.target.value.trim();
+        render();
+        return;
+    }
 
     if (field === "manualPositionKm") {
         if (event.target.value === "") {
@@ -370,7 +558,9 @@ const deriveTrainState = train => {
         departureMinutes,
         arrivalMinutes: departureMinutes + travelMinutes,
         lengthKm: (train.cars * train.carLength) / 1000,
-        manualPositionKm: train.manualPositionKm != null ? clampDistance(train.manualPositionKm) : null
+        manualPositionKm: train.manualPositionKm != null ? clampDistance(train.manualPositionKm) : null,
+        color: train.color,
+        tag: train.tag
     };
 };
 
@@ -484,6 +674,12 @@ const render = () => {
     updateTimeLabels();
 
     trainLayer.innerHTML = "";
+    trains.forEach((_, idx) => {
+        const previousGroup = document.getElementById(`train-icon-${idx}`);
+        if (previousGroup) {
+            previousGroup.remove();
+        }
+    });
     const positions = calculatePositions(minutes);
     const warnings = checkWarnings(positions);
     const warningIndexes = new Set();
@@ -492,18 +688,52 @@ const render = () => {
         w.trains.forEach(train => warningIndexes.add(train.index));
     });
 
-    const minY = 70;
-    const maxY = 220;
-    const laneSpacing = trains.length > 1 ? (maxY - minY) / (trains.length - 1) : 0;
-
     positions.forEach(train => {
         const lane = train.index;
-        const x = TRACK_PADDING_X + (trackLengthKm > 0 ? (train.distance / trackLengthKm) * TRACK_VIEW_WIDTH : 0);
-        const y = minY + lane * laneSpacing;
+        const { x, y } = getTrackPoint(train.distance, lane);
         const lengthPx = Math.max(24, trackLengthKm > 0 ? (train.state.lengthKm / trackLengthKm) * TRACK_VIEW_WIDTH : 24);
         const isWarning = warningIndexes.has(train.index);
+        const color = train.state.color || "#1c8ef9";
+        const tagSuffix = train.state.tag ? " • " + train.state.tag : "";
 
-        const group = createSvgElement("g", { transform: `translate(${x}, ${y})` });
+        if (usingCustomTrackPath) {
+            const iconGroup = createSvgElement("g", {
+                id: `train-icon-${train.index}`,
+                transform: "translate(" + x + ", " + y + ")"
+            });
+            const halo = createSvgElement("circle", {
+                r: 12,
+                fill: "rgba(255, 255, 255, 0.94)"
+            });
+            const dot = createSvgElement("circle", {
+                r: 6,
+                fill: isWarning ? "#ff4f8b" : color,
+                stroke: isWarning ? "#c81b62" : "#0b466c",
+                "stroke-width": "2"
+            });
+            const iconLabel = createSvgElement("text", {
+                y: -18,
+                "text-anchor": "middle",
+                "font-size": "12",
+                "font-weight": "600",
+                fill: "#0b0f1f",
+                "letter-spacing": "0.05em"
+            });
+            iconLabel.textContent = train.name + tagSuffix;
+            const infoLabel = createSvgElement("text", {
+                y: 22,
+                "text-anchor": "middle",
+                "font-size": "10",
+                fill: "rgba(15, 23, 42, 0.7)",
+                "letter-spacing": "0.04em"
+            });
+            infoLabel.textContent = `${train.distance.toFixed(1)} km`;
+            iconGroup.append(halo, dot, iconLabel, infoLabel);
+            trainLayer.appendChild(iconGroup);
+            return;
+        }
+
+        const group = createSvgElement("g", { transform: "translate(" + x + ", " + y + ")" });
         group.dataset.index = train.index;
         group.addEventListener("click", event => {
             event.stopPropagation();
@@ -516,7 +746,7 @@ const render = () => {
             width: lengthPx,
             height: 32,
             rx: 10,
-            fill: isWarning ? "url(#warningGradient)" : "url(#trainGradient)"
+            fill: isWarning ? "url(#warningGradient)" : color
         });
         if (isWarning) {
             rect.setAttribute("filter", "url(#glow)");
@@ -538,11 +768,17 @@ const render = () => {
             "text-anchor": "middle",
             y: -26
         });
-        label.textContent = `${train.name} • ${train.state.speed} km/h${train.state.isManual ? " • manual" : ""}`;
+        label.textContent =
+            train.name +
+            " • " +
+            train.state.speed +
+            " km/h" +
+            (train.state.isManual ? " • manual" : "") +
+            tagSuffix;
 
         const nose = createSvgElement("polygon", {
             points: "0,-18 18,0 0,18",
-            fill: isWarning ? "#ff4f8b" : "#6df8ff",
+            fill: isWarning ? "#ff4f8b" : color,
             opacity: "0.75"
         });
 
@@ -564,6 +800,95 @@ const render = () => {
 const buildTrack = () => {
     trackBase.innerHTML = "";
 
+    if (usingCustomTrackPath && trackPathElement && trackPathLength > 0) {
+        const startPoint = getTrackPoint(0, 0);
+        const endPoint = getTrackPoint(trackLengthKm, 0);
+
+        const highlight = trackPathElement.cloneNode(true);
+        highlight.removeAttribute("id");
+        highlight.classList.add("track-path-highlight");
+        highlight.setAttribute("fill", "none");
+        highlight.setAttribute("stroke", "rgba(109, 248, 255, 0.5)");
+        highlight.setAttribute("stroke-width", "8");
+        highlight.setAttribute("stroke-linecap", "round");
+        highlight.setAttribute("stroke-linejoin", "round");
+        highlight.setAttribute("pointer-events", "none");
+        trackBase.appendChild(highlight);
+
+        const createStationMarker = (point, label, distanceKm, align = "end") => {
+            const group = createSvgElement("g", {
+                transform: "translate(" + point.x + ", " + point.y + ")"
+            });
+            const outer = createSvgElement("circle", {
+                r: 18,
+                fill: "rgba(6, 10, 28, 0.92)",
+                stroke: align === "end" ? "rgba(109, 248, 255, 0.85)" : "rgba(255, 79, 139, 0.9)",
+                "stroke-width": "3"
+            });
+            const inner = createSvgElement("circle", {
+                r: 9,
+                fill: align === "end" ? "rgba(99, 242, 210, 0.95)" : "rgba(255, 146, 108, 0.95)"
+            });
+            const nameLabel = createSvgElement("text", {
+                x: align === "end" ? -28 : 28,
+                y: -26,
+                fill: "rgba(9, 14, 28, 0.95)",
+                "font-size": "13",
+                "font-weight": "600",
+                "text-anchor": align === "end" ? "end" : "start",
+                "letter-spacing": "0.06em"
+            });
+            nameLabel.textContent = label;
+            const distanceLabel = createSvgElement("text", {
+                x: align === "end" ? -28 : 28,
+                y: -10,
+                fill: "rgba(15, 23, 42, 0.68)",
+                "font-size": "12",
+                "text-anchor": align === "end" ? "end" : "start",
+                "letter-spacing": "0.04em"
+            });
+            distanceLabel.textContent = distanceKm.toFixed(1) + " km";
+            group.append(outer, inner, nameLabel, distanceLabel);
+            trackBase.appendChild(group);
+        };
+
+        createStationMarker(startPoint, stationNames.start, 0, "end");
+        createStationMarker(endPoint, stationNames.end, trackLengthKm, "start");
+
+        crossings.forEach((crossing, index) => {
+            const point = getTrackPoint(crossing.km, 0);
+            const markerGroup = createSvgElement("g", {
+                transform: "translate(" + point.x + ", " + point.y + ")"
+            });
+            const marker = createSvgElement("circle", {
+                r: 8,
+                fill: "rgba(255, 79, 139, 0.88)",
+                stroke: "rgba(255, 79, 139, 0.35)",
+                "stroke-width": "2"
+            });
+            const label = createSvgElement("text", {
+                y: -16,
+                fill: "rgba(9, 14, 28, 0.95)",
+                "font-size": "11",
+                "font-weight": "600",
+                "text-anchor": "middle",
+                "letter-spacing": "0.05em"
+            });
+            label.textContent = crossing.label || "Crossing " + (index + 1);
+            const distanceLabel = createSvgElement("text", {
+                y: 20,
+                fill: "rgba(15, 23, 42, 0.72)",
+                "font-size": "10",
+                "text-anchor": "middle",
+                "letter-spacing": "0.05em"
+            });
+            distanceLabel.textContent = crossing.km.toFixed(1) + " km";
+            markerGroup.append(marker, label, distanceLabel);
+            trackBase.appendChild(markerGroup);
+        });
+
+        return;
+    }
     const ballast = createSvgElement("rect", {
         x: TRACK_PADDING_X - 10,
         y: 118,
@@ -628,7 +953,7 @@ const buildTrack = () => {
     });
     trackBase.appendChild(centerHighlight);
 
-    const startStation = createSvgElement("g", { transform: `translate(${TRACK_PADDING_X}, 150)` });
+    const startStation = createSvgElement("g", { transform: "translate(" + TRACK_PADDING_X + ", 150)" });
     const startMarker = createSvgElement("circle", {
         r: 18,
         fill: "rgba(6, 10, 28, 0.92)",
@@ -648,12 +973,12 @@ const buildTrack = () => {
         "text-anchor": "end",
         "letter-spacing": "0.08em"
     });
-    startLabel.textContent = `${stationNames.start} • 0 km`;
+    startLabel.textContent = stationNames.start + " • 0 km";
     startStation.append(startMarker, startInner, startLabel);
     trackBase.appendChild(startStation);
 
     const endStation = createSvgElement("g", {
-        transform: `translate(${TRACK_PADDING_X + TRACK_VIEW_WIDTH}, 150)`
+        transform: "translate(" + (TRACK_PADDING_X + TRACK_VIEW_WIDTH) + ", 150)"
     });
     const endMarker = createSvgElement("circle", {
         r: 18,
@@ -674,7 +999,7 @@ const buildTrack = () => {
         "text-anchor": "start",
         "letter-spacing": "0.08em"
     });
-    endLabel.textContent = `${stationNames.end} • ${trackLengthKm.toFixed(1)} km`;
+    endLabel.textContent = stationNames.end + " • " + trackLengthKm.toFixed(1) + " km";
     endStation.append(endMarker, endInner, endLabel);
     trackBase.appendChild(endStation);
 
@@ -699,8 +1024,8 @@ const buildTrack = () => {
             "text-anchor": "middle",
             "letter-spacing": "0.08em"
         });
-        const labelText = crossing.label || `Crossing ${idx + 1}`;
-        label.textContent = `${labelText} • ${crossing.km.toFixed(1)} km`;
+        const labelText = crossing.label || ("Crossing " + (idx + 1));
+        label.textContent = labelText + " • " + crossing.km.toFixed(1) + " km";
         trackBase.appendChild(label);
     });
 };
@@ -749,6 +1074,7 @@ const handleMapUpload = event => {
 
             mapLayer.innerHTML = "";
             mapLayer.appendChild(nestedSvg);
+            updateTrackPath();
 
             const derivedRatios = deriveCrossingRatiosFromSvg(nestedSvg);
             let statusMessage;
@@ -763,6 +1089,12 @@ const handleMapUpload = event => {
             } else {
                 resetCrossingsToDefault();
                 statusMessage = `Loaded: ${file.name} • No red crossings detected (using defaults)`;
+            }
+
+            if (usingCustomTrackPath) {
+                statusMessage += " • Track path detected for live animation.";
+            } else {
+                statusMessage += " • Add data-track=\"true\" to your SVG path to animate trains along it.";
             }
 
             buildTrack();
@@ -791,6 +1123,7 @@ const clearMap = () => {
     mapStatus.textContent = "No map uploaded.";
     mapStatus.style.color = "var(--text-secondary)";
     resetCrossingsToDefault();
+    updateTrackPath();
     buildTrack();
     render();
 };
@@ -860,7 +1193,7 @@ const stepAnimation = timestamp => {
     const delta = timestamp - lastFrameTime;
     lastFrameTime = timestamp;
 
-    const advanceMinutes = (delta / 1000) * 5; // 5 minutes per second
+    const advanceMinutes = (delta / 1000) * 5 * playbackMultiplier;
     let newValue = Number(timeSlider.value) + advanceMinutes;
 
     if (newValue > Number(timeSlider.max)) {
@@ -892,6 +1225,25 @@ const resetTime = () => {
     render();
 };
 
+const scrubTimeline = deltaMinutes => {
+    const current = Number(timeSlider.value);
+    const max = Number(timeSlider.max);
+    if (!Number.isFinite(current) || !Number.isFinite(max)) {
+        return;
+    }
+    let newValue = current + deltaMinutes;
+    if (newValue < 0) {
+        newValue = 0;
+    } else if (newValue > max) {
+        newValue = max;
+    }
+    timeSlider.value = newValue;
+    if (playing) {
+        lastFrameTime = null;
+    }
+    render();
+};
+
 const handleStationInput = () => {
     stationNames = {
         start: stationStartInput.value.trim() || DEFAULT_STATIONS.start,
@@ -904,7 +1256,7 @@ const handleStationInput = () => {
 
 trainCountInput.addEventListener("input", event => {
     const count = Number(event.target.value);
-    trainCountLabel.textContent = `${count} ${count === 1 ? "train" : "trains"}`;
+    updateTrainCountLabel(count);
     buildTrainControls(count);
 });
 
@@ -914,6 +1266,29 @@ timeSlider.addEventListener("input", () => {
     }
     render();
 });
+
+if (playbackSpeedInput) {
+    playbackSpeedInput.addEventListener("input", () => {
+        const parsed = Number(playbackSpeedInput.value);
+        const clamped = Math.min(Math.max(Number.isFinite(parsed) ? parsed : 1, 0.25), 4);
+        playbackMultiplier = clamped;
+        updatePlaybackSpeedLabel();
+    });
+}
+
+if (scrubBackBtn) {
+    scrubBackBtn.addEventListener("click", event => {
+        const delta = event.shiftKey ? -5 : -1;
+        scrubTimeline(delta);
+    });
+}
+
+if (scrubForwardBtn) {
+    scrubForwardBtn.addEventListener("click", event => {
+        const delta = event.shiftKey ? 5 : 1;
+        scrubTimeline(delta);
+    });
+}
 
 playToggle.addEventListener("click", togglePlay);
 resetTimeBtn.addEventListener("click", resetTime);
@@ -932,6 +1307,252 @@ stationStartInput.addEventListener("input", handleStationInput);
 stationEndInput.addEventListener("input", handleStationInput);
 trackSvg.addEventListener("click", handleTrackClick);
 
+const serializeScenario = () => ({
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    trackLengthKm,
+    stationNames,
+    crossingState: crossingState.map(state => ({ ratio: state.ratio, label: state.label })),
+    playbackSpeed: playbackMultiplier,
+    trains: trains.map(train => ({
+        name: train.name,
+        departure: train.departure,
+        speed: train.speed,
+        distance: train.distance,
+        cars: train.cars,
+        carLength: train.carLength,
+        manualPositionKm: train.manualPositionKm,
+        color: train.color,
+        tag: train.tag
+    }))
+});
+
+const applyScenario = scenario => {
+    if (!scenario || typeof scenario !== "object") {
+        throw new Error("Scenario payload is invalid.");
+    }
+
+    if (Number.isFinite(Number(scenario.trackLengthKm)) && Number(scenario.trackLengthKm) > 0) {
+        trackLengthKm = Number(scenario.trackLengthKm);
+        trackLengthInput.value = trackLengthKm;
+    }
+
+    if (scenario.stationNames) {
+        stationNames = {
+            start: scenario.stationNames.start?.trim() || DEFAULT_STATIONS.start,
+            end: scenario.stationNames.end?.trim() || DEFAULT_STATIONS.end
+        };
+    } else {
+        stationNames = { ...DEFAULT_STATIONS };
+    }
+    stationStartInput.value = stationNames.start;
+    stationEndInput.value = stationNames.end;
+
+    const importedCrossings = scenario.crossingState || scenario.crossings;
+    if (Array.isArray(importedCrossings)) {
+        crossingState = importedCrossings
+            .map((entry, index) => {
+                if (!entry) {
+                    return null;
+                }
+                const label = entry.label || `Crossing ${index + 1}`;
+                let ratio = null;
+                if (Number.isFinite(Number(entry.ratio))) {
+                    ratio = Math.min(Math.max(Number(entry.ratio), 0), 1);
+                } else if (Number.isFinite(Number(entry.km)) && trackLengthKm > 0) {
+                    ratio = clampDistance(Number(entry.km)) / trackLengthKm;
+                }
+                if (ratio === null) {
+                    return null;
+                }
+                return { ratio, label };
+            })
+            .filter(Boolean);
+        if (!crossingState.length) {
+            resetCrossingsToDefault();
+        } else {
+            recalcCrossings();
+        }
+    } else {
+        resetCrossingsToDefault();
+    }
+    renderCrossingControls();
+
+    if (Number.isFinite(Number(scenario.playbackSpeed))) {
+        const parsedSpeed = Number(scenario.playbackSpeed);
+        playbackMultiplier = Math.min(Math.max(parsedSpeed, 0.25), 4);
+    } else {
+        playbackMultiplier = 1;
+    }
+    if (playbackSpeedInput) {
+        playbackSpeedInput.value = playbackMultiplier;
+    }
+    updatePlaybackSpeedLabel();
+
+    const scenarioTrains = Array.isArray(scenario.trains)
+        ? scenario.trains.slice(0, MAX_TRAINS)
+        : [];
+    const count = Math.max(1, scenarioTrains.length || Number(trainCountInput.value) || 1);
+    trainCountInput.value = count;
+    updateTrainCountLabel(count);
+    buildTrainControls(count, scenarioTrains.length ? scenarioTrains : null);
+
+    applyTrackLengthToTrains();
+    recalcTimeline();
+    updateTrackLengthSummary();
+    renderTrackLabels();
+    buildTrack();
+    render();
+};
+
+const handleScenarioSave = () => {
+    try {
+        const data = JSON.stringify(serializeScenario(), null, 2);
+        const blob = new Blob([data], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `rail-scenario-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+        setScenarioStatus("Scenario saved to your downloads.");
+    } catch (error) {
+        console.error(error);
+        setScenarioStatus(`Failed to save scenario: ${error.message}`, true);
+    }
+};
+
+const handleScenarioLoad = event => {
+    const file = event.target.files?.[0];
+    if (!file) {
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+        try {
+            const scenario = JSON.parse(reader.result);
+            applyScenario(scenario);
+            setScenarioStatus(`Loaded scenario: ${file.name}`);
+        } catch (error) {
+            console.error(error);
+            setScenarioStatus(`Failed to load scenario: ${error.message}`, true);
+        } finally {
+            scenarioLoadInput.value = "";
+        }
+    };
+    reader.onerror = () => {
+        setScenarioStatus("Failed to read scenario file.", true);
+        scenarioLoadInput.value = "";
+    };
+    reader.readAsText(file);
+};
+
+const serializeMetadata = () => ({
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    stationNames,
+    crossingState: crossingState.map(state => ({
+        ratio: state.ratio,
+        label: state.label
+    }))
+});
+
+const applyMetadata = metadata => {
+    if (!metadata || typeof metadata !== "object") {
+        throw new Error("Metadata payload is invalid.");
+    }
+
+    if (metadata.stationNames) {
+        stationNames = {
+            start: metadata.stationNames.start?.trim() || DEFAULT_STATIONS.start,
+            end: metadata.stationNames.end?.trim() || DEFAULT_STATIONS.end
+        };
+        stationStartInput.value = stationNames.start;
+        stationEndInput.value = stationNames.end;
+    }
+
+    const imported = metadata.crossingState || metadata.crossings;
+    if (Array.isArray(imported) && imported.length) {
+        crossingState = imported
+            .map((entry, index) => {
+                if (!entry) {
+                    return null;
+                }
+                const label = entry.label || `Crossing ${index + 1}`;
+                let ratio = null;
+                if (Number.isFinite(Number(entry.ratio))) {
+                    ratio = Math.min(Math.max(Number(entry.ratio), 0), 1);
+                } else if (Number.isFinite(Number(entry.km)) && trackLengthKm > 0) {
+                    ratio = clampDistance(Number(entry.km)) / trackLengthKm;
+                }
+                if (ratio === null) {
+                    return null;
+                }
+                return { ratio, label };
+            })
+            .filter(Boolean);
+        if (!crossingState.length) {
+            resetCrossingsToDefault();
+        } else {
+            recalcCrossings();
+        }
+    }
+
+    renderCrossingControls();
+    buildTrack();
+};
+
+const handleMetadataExport = () => {
+    try {
+        const data = JSON.stringify(serializeMetadata(), null, 2);
+        const blob = new Blob([data], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `rail-map-metadata-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+        setScenarioStatus("Map metadata exported.");
+    } catch (error) {
+        console.error(error);
+        setScenarioStatus(`Failed to export metadata: ${error.message}`, true);
+    }
+};
+
+const handleMetadataImport = event => {
+    const file = event.target.files?.[0];
+    if (!file) {
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+        try {
+            const metadata = JSON.parse(reader.result);
+            applyMetadata(metadata);
+            setScenarioStatus(`Imported map metadata: ${file.name}`);
+        } catch (error) {
+            console.error(error);
+            setScenarioStatus(`Failed to import metadata: ${error.message}`, true);
+        } finally {
+            metadataImportInput.value = "";
+        }
+    };
+    reader.onerror = () => {
+        setScenarioStatus("Failed to read metadata file.", true);
+        metadataImportInput.value = "";
+    };
+    reader.readAsText(file);
+};
+
+scenarioSaveBtn.addEventListener("click", handleScenarioSave);
+scenarioLoadBtn.addEventListener("click", () => scenarioLoadInput.click());
+scenarioLoadInput.addEventListener("change", handleScenarioLoad);
+metadataExportBtn.addEventListener("click", handleMetadataExport);
+metadataImportBtn.addEventListener("click", () => metadataImportInput.click());
+metadataImportInput.addEventListener("change", handleMetadataImport);
+
 trackLengthInput.value = trackLengthKm;
 stationStartInput.value = stationNames.start;
 stationEndInput.value = stationNames.end;
@@ -939,6 +1560,11 @@ recalcCrossings();
 renderCrossingControls();
 updateTrackLengthSummary();
 renderTrackLabels();
+updateTrackPath();
+if (playbackSpeedInput) {
+    playbackSpeedInput.value = playbackMultiplier;
+}
+updatePlaybackSpeedLabel();
 buildTrack();
 buildTrainControls(Number(trainCountInput.value));
 render();
