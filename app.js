@@ -70,6 +70,10 @@ const addStationBtn = document.getElementById("add-station");
 const startNodesSelect = document.getElementById("start-nodes-select");
 const startNodesApplyBtn = document.getElementById("start-nodes-apply");
 const startNodesClearBtn = document.getElementById("start-nodes-clear");
+const tabButtons = document.querySelectorAll(".tab-button");
+const tabPanels = document.querySelectorAll(".tab-panel");
+const controlsTabButtons = document.querySelectorAll(".controls-tab-button");
+const controlsTabPanels = document.querySelectorAll(".controls-tab-panel");
 
 trainCountInput.max = MAX_TRAINS;
 
@@ -2998,6 +3002,36 @@ const handleMetadataImport = event => {
     };
     reader.readAsText(file);
 };
+
+if (tabButtons.length && tabPanels.length) {
+    tabButtons.forEach(button => {
+        button.addEventListener("click", () => {
+            const targetId = button.dataset.tabTarget;
+            if (!targetId) {
+                return;
+            }
+            tabButtons.forEach(btn => btn.classList.toggle("is-active", btn === button));
+            tabPanels.forEach(panel => {
+                panel.classList.toggle("is-active", panel.id === targetId);
+            });
+        });
+    });
+}
+
+if (controlsTabButtons.length && controlsTabPanels.length) {
+    controlsTabButtons.forEach(button => {
+        button.addEventListener("click", () => {
+            const targetId = button.dataset.tabTarget;
+            if (!targetId) {
+                return;
+            }
+            controlsTabButtons.forEach(btn => btn.classList.toggle("is-active", btn === button));
+            controlsTabPanels.forEach(panel => {
+                panel.classList.toggle("is-active", panel.id === targetId);
+            });
+        });
+    });
+}
 
 scenarioSaveBtn.addEventListener("click", handleScenarioSave);
 scenarioLoadBtn.addEventListener("click", () => scenarioLoadInput.click());

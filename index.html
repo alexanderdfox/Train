@@ -35,136 +35,157 @@
         </header>
 
         <main class="main-layout">
-        <section class="controls-panel glass-panel">
-            <div class="controls-grid">
-                <div class="control-card">
-                    <div class="control-title">
-                        <span>①</span>
-                        <h2>Train Matrix</h2>
+        <section class="tab-container glass-panel">
+            <div class="tab-bar">
+                <button class="tab-button is-active" type="button" data-tab-target="panel-controls">Control Suite</button>
+                <button class="tab-button" type="button" data-tab-target="panel-visual">Live Track</button>
+            </div>
+            <div class="tab-panels">
+                <div class="tab-panel is-active" id="panel-controls">
+            <section class="controls-panel">
+                <div class="controls-tabs">
+                    <div class="controls-tab-bar">
+                        <button class="controls-tab-button is-active" type="button" data-tab-target="controls-trains">Trains</button>
+                        <button class="controls-tab-button" type="button" data-tab-target="controls-timeline">Timeline</button>
+                        <button class="controls-tab-button" type="button" data-tab-target="controls-map">Map</button>
+                        <button class="controls-tab-button" type="button" data-tab-target="controls-scenario">Scenarios</button>
                     </div>
-                    <label>
-                        Active Trains
-                        <input id="train-count" type="range" min="1" max="1000" value="4">
-                    </label>
-                    <div class="control-meta">
-                        <small>Drag to spawn up to 1000 consists</small>
-                        <strong id="train-count-label">4 trains</strong>
-                    </div>
-                </div>
-
-                <div class="control-card">
-                    <div class="control-title">
-                        <span>②</span>
-                        <h2>Timeline & Track</h2>
-                    </div>
-                    <div class="slider-wrap">
-                        <label>
-                            Simulation Time
-                            <input id="time-slider" type="range" min="0" max="180" value="0">
-                        </label>
-                        <div class="time-meta">
-                            <strong id="time-label">08:00</strong>
-                            <small id="time-offset-label">+0 min</small>
+                    <div class="controls-tab-panels">
+                        <div class="controls-tab-panel is-active" id="controls-trains">
+                            <div class="control-card">
+                                <div class="control-title">
+                                    <span>①</span>
+                                    <h2>Train Matrix</h2>
+                                </div>
+                                <label>
+                                    Active Trains
+                                    <input id="train-count" type="range" min="1" max="1000" value="4">
+                                </label>
+                                <div class="control-meta">
+                                    <small>Drag to spawn up to 1000 consists</small>
+                                    <strong id="train-count-label">4 trains</strong>
+                                </div>
+                            </div>
+                            <div class="train-controls" id="train-controls"></div>
                         </div>
-                    </div>
-                    <div class="field-row">
-                        <label>
-                            Track Length (km)
-                            <input id="track-length-input" type="number" min="10" max="5000" value="240" step="1">
-                        </label>
-                        <label>
-                            Origin Station
-                            <input id="station-start-input" type="text" maxlength="60" value="Origin Terminal">
-                        </label>
-                        <div class="multi-start-control">
-                            <label>
-                                Starting Nodes
-                                <div class="multi-start-select">
-                                    <select id="start-nodes-select" multiple></select>
-                                    <div class="multi-start-actions">
-                                        <button id="start-nodes-apply" class="secondary" type="button">Apply</button>
-                                        <button id="start-nodes-clear" class="secondary" type="button">Clear</button>
+                        <div class="controls-tab-panel" id="controls-timeline">
+                            <div class="control-card">
+                                <div class="control-title">
+                                    <span>②</span>
+                                    <h2>Timeline & Track</h2>
+                                </div>
+                                <div class="slider-wrap">
+                                    <label>
+                                        Simulation Time
+                                        <input id="time-slider" type="range" min="0" max="180" value="0">
+                                    </label>
+                                    <div class="time-meta">
+                                        <strong id="time-label">08:00</strong>
+                                        <small id="time-offset-label">+0 min</small>
                                     </div>
                                 </div>
-                            </label>
-                            <small class="hint-text">
-                                Choose one or more map nodes as origin points. Shift-click to multi-select trains for bulk assignment.
-                            </small>
+                                <div class="field-row">
+                                    <label>
+                                        Track Length (km)
+                                        <input id="track-length-input" type="number" min="10" max="5000" value="240" step="1">
+                                    </label>
+                                    <label>
+                                        Origin Station
+                                        <input id="station-start-input" type="text" maxlength="60" value="Origin Terminal">
+                                    </label>
+                                    <div class="multi-start-control">
+                                        <label>
+                                            Starting Nodes
+                                            <div class="multi-start-select">
+                                                <select id="start-nodes-select" multiple></select>
+                                                <div class="multi-start-actions">
+                                                    <button id="start-nodes-apply" class="secondary" type="button">Apply</button>
+                                                    <button id="start-nodes-clear" class="secondary" type="button">Clear</button>
+                                                </div>
+                                            </div>
+                                        </label>
+                                        <small class="hint-text">
+                                            Choose one or more map nodes as origin points. Shift-click to multi-select trains for bulk assignment.
+                                        </small>
+                                    </div>
+                                    <label>
+                                        Destination Station
+                                        <input id="station-end-input" type="text" maxlength="60" value="Summit Station">
+                                    </label>
+                                </div>
+                                <div class="field-row">
+                                    <div id="station-list" class="station-list"></div>
+                                    <button id="add-station" class="secondary" type="button">Add Station</button>
+                                </div>
+                                <div class="field-row">
+                                    <label>
+                                        Playback Speed
+                                        <input id="playback-speed" type="range" min="0.25" max="4" step="0.25" value="1">
+                                    </label>
+                                    <div class="speed-meta">
+                                        <strong id="playback-speed-label">1.0×</strong>
+                                        <small class="hint-text">Adjust animation pace</small>
+                                    </div>
+                                </div>
+                                <div class="button-row">
+                                    <button id="play-toggle" type="button">Play</button>
+                                    <button id="reset-time" class="secondary" type="button">Reset Time</button>
+                                    <button id="scrub-back" class="secondary" type="button">« 1 min</button>
+                                    <button id="scrub-forward" class="secondary" type="button">+1 min »</button>
+                                </div>
+                            </div>
                         </div>
-                        <label>
-                            Destination Station
-                            <input id="station-end-input" type="text" maxlength="60" value="Summit Station">
-                        </label>
-                    </div>
-                    <div class="field-row">
-                        <div id="station-list" class="station-list"></div>
-                        <button id="add-station" class="secondary" type="button">Add Station</button>
-                    </div>
-                    <div class="field-row">
-                        <label>
-                            Playback Speed
-                            <input id="playback-speed" type="range" min="0.25" max="4" step="0.25" value="1">
-                        </label>
-                        <div class="speed-meta">
-                            <strong id="playback-speed-label">1.0×</strong>
-                            <small class="hint-text">Adjust animation pace</small>
+                        <div class="controls-tab-panel" id="controls-map">
+                            <div class="control-card">
+                                <div class="control-title">
+                                    <span>③</span>
+                                    <h2>Map Overlay & Crossings</h2>
+                                </div>
+                                <label class="file-upload">
+                                    SVG Route Map
+                                    <input id="map-upload" type="file" accept=".svg,image/svg+xml">
+                                </label>
+                                <small id="map-status" class="hint-text">Upload a vector map. Red strokes/fills become crossings.</small>
+                                <div class="button-row">
+                                    <button id="clear-map" class="secondary" type="button">Remove Map</button>
+                                    <button id="reset-crossings" class="secondary" type="button">Reset Crossings</button>
+                                </div>
+                                <div class="crossing-controls">
+                                    <h3>Crossing Labels</h3>
+                                    <div id="crossing-list" class="crossing-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="controls-tab-panel" id="controls-scenario">
+                            <div class="control-card">
+                                <div class="control-title">
+                                    <span>④</span>
+                                    <h2>Scenario Management</h2>
+                                </div>
+                                <p class="hint-text">
+                                    Save the current setup or load a JSON preset. Metadata export keeps station and crossing names
+                                    aligned with your SVG map.
+                                </p>
+                                <div class="button-row">
+                                    <button id="scenario-save" type="button">Save Scenario</button>
+                                    <button id="scenario-load" class="secondary" type="button">Load Scenario</button>
+                                    <input id="scenario-load-input" type="file" accept="application/json" hidden>
+                                </div>
+                                <div class="button-row">
+                                    <button id="metadata-export" type="button">Export Map Metadata</button>
+                                    <button id="metadata-import" class="secondary" type="button">Import Map Metadata</button>
+                                    <input id="metadata-import-input" type="file" accept="application/json" hidden>
+                                </div>
+                                <small id="scenario-status" class="hint-text">No scenario actions performed yet.</small>
+                            </div>
                         </div>
                     </div>
-                    <div class="button-row">
-                        <button id="play-toggle" type="button">Play</button>
-                        <button id="reset-time" class="secondary" type="button">Reset Time</button>
-                        <button id="scrub-back" class="secondary" type="button">« 1 min</button>
-                        <button id="scrub-forward" class="secondary" type="button">+1 min »</button>
-                    </div>
+                </div>
+            </section>
                 </div>
 
-                <div class="control-card">
-                    <div class="control-title">
-                        <span>③</span>
-                        <h2>Map Overlay & Crossings</h2>
-                    </div>
-                    <label class="file-upload">
-                        SVG Route Map
-                        <input id="map-upload" type="file" accept=".svg,image/svg+xml">
-                    </label>
-                    <small id="map-status" class="hint-text">Upload a vector map. Red strokes/fills become crossings.</small>
-                    <div class="button-row">
-                        <button id="clear-map" class="secondary" type="button">Remove Map</button>
-                        <button id="reset-crossings" class="secondary" type="button">Reset Crossings</button>
-                    </div>
-                    <div class="crossing-controls">
-                        <h3>Crossing Labels</h3>
-                        <div id="crossing-list" class="crossing-list"></div>
-                    </div>
-                </div>
-
-                <div class="control-card">
-                    <div class="control-title">
-                        <span>④</span>
-                        <h2>Scenario Management</h2>
-                    </div>
-                    <p class="hint-text">
-                        Save the current setup or load a JSON preset. Metadata export keeps station and crossing names
-                        aligned with your SVG map.
-                    </p>
-                    <div class="button-row">
-                        <button id="scenario-save" type="button">Save Scenario</button>
-                        <button id="scenario-load" class="secondary" type="button">Load Scenario</button>
-                        <input id="scenario-load-input" type="file" accept="application/json" hidden>
-                    </div>
-                    <div class="button-row">
-                        <button id="metadata-export" type="button">Export Map Metadata</button>
-                        <button id="metadata-import" class="secondary" type="button">Import Map Metadata</button>
-                        <input id="metadata-import-input" type="file" accept="application/json" hidden>
-                    </div>
-                    <small id="scenario-status" class="hint-text">No scenario actions performed yet.</small>
-                </div>
-            </div>
-
-            <div class="train-controls" id="train-controls"></div>
-        </section>
-
-        <section class="visual-panel glass-panel">
+                <div class="tab-panel" id="panel-visual">
+            <section class="visual-panel">
             <div class="visual-header">
                 <div>
                     <h2>Live Track View</h2>
@@ -235,7 +256,9 @@
                     <div class="conflict-empty">No conflicts recorded yet.</div>
                 </div>
             </div>
-        </section>
+            </section>
+                </div>
+            </div>
         </section>
         </main>
     </div>
