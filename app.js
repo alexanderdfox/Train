@@ -419,6 +419,63 @@ const getTrackPoint = (distanceKm, laneIndex = 0) => {
     return { x, y, ratio: clampedRatio };
 };
 
+const projectPointToTrackPath = point => {
+    if (!usingCustomTrackPath || !trackPathElement || trackPathLength <= 0 || !point) {
+        return null;
+    }
+
+    const samples = 256;
+    let closestLength = 0;
+    let minDistSq = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i <= samples; i += 1) {
+        const length = (i / samples) * trackPathLength;
+        const raw = trackPathElement.getPointAtLength(length);
+        const transformed = transformPathPoint(raw, trackPathElement);
+        const dx = point.x - transformed.x;
+        const dy = point.y - transformed.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < minDistSq) {
+            minDistSq = distSq;
+            closestLength = length;
+        }
+    }
+
+    let step = trackPathLength / samples;
+    while (step > 1) {
+        let improved = false;
+        for (const offset of [-step, step]) {
+            const candidateLength = Math.min(
+                Math.max(closestLength + offset, 0),
+                trackPathLength
+            );
+            const raw = trackPathElement.getPointAtLength(candidateLength);
+            const transformed = transformPathPoint(raw, trackPathElement);
+            const dx = point.x - transformed.x;
+            const dy = point.y - transformed.y;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < minDistSq) {
+                minDistSq = distSq;
+                closestLength = candidateLength;
+                improved = true;
+            }
+        }
+        if (!improved) {
+            step /= 2;
+        }
+    }
+
+    const finalPoint = transformPathPoint(
+        trackPathElement.getPointAtLength(closestLength),
+        trackPathElement
+    );
+    const km = trackLengthKm > 0 ? (closestLength / trackPathLength) * trackLengthKm : 0;
+    return {
+        km: clampDistance(km),
+        point: finalPoint
+    };
+};
+
 const recalcCrossings = () => {
     crossingState = crossingState
         .map(state => {
@@ -1698,23 +1755,15 @@ const handleMapUpload = event => {
             const uploadedSvg = doc.documentElement;
             const nestedSvg = document.importNode(uploadedSvg, true);
 
-            if (!nestedSvg.getAttribute("width")) {
-                nestedSvg.setAttribute("width", "1200");
-            }
-            if (!nestedSvg.getAttribute("height")) {
-                nestedSvg.setAttribute("height", "280");
-            }
-
+            nestedSvg.removeAttribute("width");
+            nestedSvg.removeAttribute("height");
             nestedSvg.setAttribute("x", nestedSvg.getAttribute("x") ?? "0");
             nestedSvg.setAttribute("y", nestedSvg.getAttribute("y") ?? "0");
-            nestedSvg.setAttribute(
-                "preserveAspectRatio",
-                nestedSvg.getAttribute("preserveAspectRatio") || "xMidYMid meet"
-            );
 
             mapLayer.innerHTML = "";
             mapLayer.appendChild(nestedSvg);
             updateTrackPath();
+            resetViewport();
 
             const derivedRatios = deriveCrossingRatiosFromSvg(nestedSvg);
             let statusMessage;
@@ -1798,13 +1847,22 @@ const handleTrackClick = event => {
     }
 
     const localPoint = getLocalPointFromClient(event.clientX, event.clientY);
-    const normalized = (localPoint.x - TRACK_PADDING_X) / TRACK_VIEW_WIDTH;
-    if (normalized < 0 || normalized > 1) {
-        return;
-    }
-    const km = clampDistance(normalized * trackLengthKm);
-    if (!Number.isFinite(km)) {
-        return;
+    let km;
+    if (usingCustomTrackPath && trackPathElement && trackPathLength > 0) {
+        const projection = projectPointToTrackPath(localPoint);
+        if (!projection) {
+            return;
+        }
+        km = projection.km;
+    } else {
+        const normalized = (localPoint.x - TRACK_PADDING_X) / TRACK_VIEW_WIDTH;
+        if (normalized < 0 || normalized > 1) {
+            return;
+        }
+        km = clampDistance(normalized * trackLengthKm);
+        if (!Number.isFinite(km)) {
+            return;
+        }
     }
 
     const train = trains[activeTrainIndex];
@@ -2238,6 +2296,7 @@ if (playbackSpeedInput) {
 }
 updatePlaybackSpeedLabel();
 buildTrack();
+applyViewportTransform();
 buildTrainControls(Number(trainCountInput.value));
 render();
 
