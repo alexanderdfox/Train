@@ -381,6 +381,19 @@ button.secondary {
     font-size: 0.95rem;
 }
 
+.viewport-controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.viewport-controls button {
+    min-width: 44px;
+    padding-inline: 12px;
+    font-size: 0.95rem;
+}
+
 .dot {
     display: inline-flex;
     width: 18px;
@@ -417,6 +430,103 @@ svg {
 .track-path-highlight {
     fill: none;
     pointer-events: none;
+}
+
+.conflict-console {
+    display: grid;
+    gap: 14px;
+    border-radius: 18px;
+    background: rgba(8, 12, 29, 0.68);
+    border: 1px solid rgba(96, 231, 231, 0.16);
+    padding: 18px 20px;
+}
+
+.conflict-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.conflict-controls label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    letter-spacing: 0.04em;
+}
+
+.conflict-controls select {
+    min-width: 160px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(5, 9, 22, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+.conflict-control-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.conflict-log-list {
+    display: grid;
+    gap: 10px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+
+.conflict-log-item {
+    display: grid;
+    grid-template-columns: 120px 1fr 90px;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: rgba(5, 9, 22, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    color: var(--text-primary);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    transition: border 0.18s ease, background 0.18s ease;
+}
+
+.conflict-log-item:hover {
+    border-color: rgba(109, 248, 255, 0.45);
+}
+
+.conflict-log-item.is-active {
+    border-color: rgba(109, 248, 255, 0.75);
+    background: rgba(109, 248, 255, 0.12);
+}
+
+.conflict-log-time {
+    font-weight: 600;
+    letter-spacing: 0.05em;
+}
+
+.conflict-log-trains {
+    color: rgba(247, 251, 255, 0.85);
+    letter-spacing: 0.04em;
+}
+
+.conflict-log-gap {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    letter-spacing: 0.04em;
+    text-align: right;
+}
+
+.conflict-empty {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    letter-spacing: 0.05em;
 }
 
 .track-labels {

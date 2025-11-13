@@ -139,6 +139,11 @@
                     <span><span class="dot safe"></span>Safe Separation</span>
                     <span><span class="dot warning"></span>Unsafe Gap (&lt; 100 m)</span>
                 </div>
+                <div class="viewport-controls">
+                    <button id="zoom-in" type="button" title="Zoom in">+</button>
+                    <button id="zoom-out" type="button" title="Zoom out">-</button>
+                    <button id="zoom-reset" class="secondary" type="button" title="Reset view">Reset View</button>
+                </div>
             </div>
 
             <div class="svg-wrapper">
@@ -160,10 +165,12 @@
                             </feMerge>
                         </filter>
                     </defs>
-                    <rect class="map-background" x="0" y="0" width="1200" height="280"></rect>
-                    <g id="map-layer"></g>
-                    <g id="track-base"></g>
-                    <g id="train-layer"></g>
+                    <g id="viewport-root">
+                        <rect class="map-background" x="0" y="0" width="1200" height="280"></rect>
+                        <g id="map-layer"></g>
+                        <g id="track-base"></g>
+                        <g id="train-layer"></g>
+                    </g>
                 </svg>
             </div>
 
@@ -174,6 +181,23 @@
 
             <div class="warnings" id="warnings-panel">
                 <div class="no-warnings">All clear — no spacing conflicts detected.</div>
+            </div>
+
+            <div class="conflict-console">
+                <div class="conflict-controls">
+                    <label>
+                        Filter Conflicts
+                        <select id="conflict-filter">
+                            <option value="all">All trains</option>
+                        </select>
+                    </label>
+                    <div class="conflict-control-buttons">
+                        <button id="conflict-clear" class="secondary" type="button">Clear Log</button>
+                    </div>
+                </div>
+                <div id="conflict-log-list" class="conflict-log-list">
+                    <div class="conflict-empty">No conflicts recorded yet.</div>
+                </div>
             </div>
         </section>
     </div>

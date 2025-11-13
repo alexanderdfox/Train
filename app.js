@@ -57,6 +57,13 @@ const playbackSpeedInput = document.getElementById("playback-speed");
 const playbackSpeedLabel = document.getElementById("playback-speed-label");
 const scrubBackBtn = document.getElementById("scrub-back");
 const scrubForwardBtn = document.getElementById("scrub-forward");
+const viewportRoot = document.getElementById("viewport-root");
+const zoomInBtn = document.getElementById("zoom-in");
+const zoomOutBtn = document.getElementById("zoom-out");
+const zoomResetBtn = document.getElementById("zoom-reset");
+const conflictFilterSelect = document.getElementById("conflict-filter");
+const conflictLogList = document.getElementById("conflict-log-list");
+const conflictClearBtn = document.getElementById("conflict-clear");
 
 trainCountInput.max = MAX_TRAINS;
 
@@ -78,6 +85,22 @@ let trackPathElement = null;
 let trackPathLength = 0;
 let usingCustomTrackPath = false;
 let playbackMultiplier = 1;
+let zoomLevel = 1;
+let panX = 0;
+let panY = 0;
+let isPanning = false;
+let panPointerId = null;
+let panStartLocal = { x: 0, y: 0 };
+let panOrigin = { x: 0, y: 0 };
+
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 1.2;
+const CONFLICT_LOG_LIMIT = 500;
+
+const conflictLog = [];
+const conflictLogKeys = new Set();
+let activeConflictFilter = "all";
 
 const createSvgElement = (tag, attributes = {}) => {
     const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -110,6 +133,121 @@ const escapeAttribute = value =>
         .replace(/"/g, "&quot;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+
+const getLocalPointFromClient = (clientX, clientY) => {
+    if (!trackSvg || !viewportRoot || typeof trackSvg.createSVGPoint !== "function") {
+        return { x: clientX, y: clientY };
+    }
+    const point = trackSvg.createSVGPoint();
+    point.x = clientX;
+    point.y = clientY;
+    const ctm = viewportRoot.getScreenCTM();
+    if (!ctm) {
+        return { x: clientX, y: clientY };
+    }
+    const local = point.matrixTransform(ctm.inverse());
+    return { x: local.x, y: local.y };
+};
+
+const applyViewportTransform = () => {
+    if (!viewportRoot) {
+        return;
+    }
+    viewportRoot.setAttribute("transform", "translate(" + panX + ", " + panY + ") scale(" + zoomLevel + ")");
+    if (!trackSvg) {
+        return;
+    }
+    if (isPanning) {
+        trackSvg.style.cursor = "grabbing";
+    } else if (zoomLevel !== 1 || panX !== 0 || panY !== 0) {
+        trackSvg.style.cursor = "grab";
+    } else {
+        trackSvg.style.cursor = "default";
+    }
+};
+
+const getViewportCenterPoint = () => {
+    if (!trackSvg) {
+        return null;
+    }
+    const rect = trackSvg.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+        return null;
+    }
+    return getLocalPointFromClient(rect.left + rect.width / 2, rect.top + rect.height / 2);
+};
+
+const changeZoom = (factor, focusPoint) => {
+    const newZoom = Math.min(Math.max(zoomLevel * factor, MIN_ZOOM), MAX_ZOOM);
+    if (!Number.isFinite(newZoom) || newZoom === zoomLevel) {
+        return;
+    }
+    const focus = focusPoint || getViewportCenterPoint();
+    if (focus) {
+        panX = focus.x - (focus.x - panX) * (newZoom / zoomLevel);
+        panY = focus.y - (focus.y - panY) * (newZoom / zoomLevel);
+    } else {
+        panX *= newZoom / zoomLevel;
+        panY *= newZoom / zoomLevel;
+    }
+    zoomLevel = newZoom;
+    applyViewportTransform();
+};
+
+const resetViewport = () => {
+    zoomLevel = 1;
+    panX = 0;
+    panY = 0;
+    applyViewportTransform();
+};
+
+const handleWheel = event => {
+    if (!trackSvg) {
+        return;
+    }
+    event.preventDefault();
+    const focus = getLocalPointFromClient(event.clientX, event.clientY);
+    const factor = event.deltaY > 0 ? 1 / ZOOM_STEP : ZOOM_STEP;
+    changeZoom(factor, focus);
+};
+
+const handlePointerDown = event => {
+    if (!(event.altKey || event.button === 1 || event.button === 2)) {
+        return;
+    }
+    event.preventDefault();
+    if (trackSvg && trackSvg.setPointerCapture) {
+        trackSvg.setPointerCapture(event.pointerId);
+    }
+    isPanning = true;
+    panPointerId = event.pointerId;
+    panStartLocal = getLocalPointFromClient(event.clientX, event.clientY);
+    panOrigin = { x: panX, y: panY };
+    applyViewportTransform();
+};
+
+const handlePointerMove = event => {
+    if (!isPanning || event.pointerId !== panPointerId) {
+        return;
+    }
+    event.preventDefault();
+    const current = getLocalPointFromClient(event.clientX, event.clientY);
+    panX = panOrigin.x + (current.x - panStartLocal.x);
+    panY = panOrigin.y + (current.y - panStartLocal.y);
+    applyViewportTransform();
+};
+
+const handlePointerUp = event => {
+    if (!isPanning || event.pointerId !== panPointerId) {
+        return;
+    }
+    if (trackSvg && trackSvg.releasePointerCapture) {
+        trackSvg.releasePointerCapture(event.pointerId);
+    }
+    isPanning = false;
+    panPointerId = null;
+    applyViewportTransform();
+};
 
 const setScenarioStatus = (message, isError = false) => {
     if (!scenarioStatus) {
@@ -490,6 +628,7 @@ const buildTrainControls = (count, presetTrains = null) => {
     setActiveTrain(activeTrainIndex);
 
     updateTrainCountLabel(trains.length);
+    refreshConflictFilterOptions();
     recalcTimeline();
     render();
 };
@@ -669,6 +808,125 @@ const renderWarnings = warnings => {
     });
 };
 
+const recordConflicts = (warnings, minute) => {
+    if (!Number.isFinite(minute)) {
+        return false;
+    }
+    const normalizedMinute = Math.max(0, Math.round(minute));
+    let added = false;
+
+    warnings.forEach(warning => {
+        const names = [warning.trains[0].name, warning.trains[1].name].sort();
+        const key = names.join("|") + "@" + normalizedMinute;
+        if (conflictLogKeys.has(key)) {
+            return;
+        }
+        conflictLogKeys.add(key);
+        const entry = {
+            key,
+            minute: normalizedMinute,
+            trains: names,
+            gapMeters: warning.gapMeters
+        };
+        conflictLog.push(entry);
+        if (conflictLog.length > CONFLICT_LOG_LIMIT) {
+            const removed = conflictLog.shift();
+            if (removed) {
+                conflictLogKeys.delete(removed.key);
+            }
+        }
+        added = true;
+    });
+
+    return added;
+};
+
+const refreshConflictFilterOptions = () => {
+    if (!conflictFilterSelect) {
+        return;
+    }
+    const previousValue = conflictFilterSelect.value || "all";
+    conflictFilterSelect.innerHTML = "";
+
+    const allOption = document.createElement("option");
+    allOption.value = "all";
+    allOption.textContent = "All trains";
+    conflictFilterSelect.appendChild(allOption);
+
+    trains.forEach(train => {
+        const option = document.createElement("option");
+        option.value = train.name;
+        option.textContent = train.name;
+        conflictFilterSelect.appendChild(option);
+    });
+
+    const availableValues = Array.from(conflictFilterSelect.options).map(option => option.value);
+    if (availableValues.includes(previousValue)) {
+        conflictFilterSelect.value = previousValue;
+        activeConflictFilter = previousValue;
+    } else {
+        conflictFilterSelect.value = "all";
+        activeConflictFilter = "all";
+    }
+};
+
+const renderConflictLog = (currentMinute = null) => {
+    if (!conflictLogList) {
+        return;
+    }
+    const filterValue = conflictFilterSelect ? conflictFilterSelect.value : "all";
+    activeConflictFilter = filterValue;
+    conflictLogList.innerHTML = "";
+
+    const normalizedMinute = Number.isFinite(currentMinute) ? Math.max(0, Math.round(currentMinute)) : null;
+    const filtered = conflictLog
+        .filter(entry => filterValue === "all" || entry.trains.includes(filterValue))
+        .sort((a, b) => a.minute - b.minute);
+
+    if (!filtered.length) {
+        const empty = document.createElement("div");
+        empty.className = "conflict-empty";
+        empty.textContent = "No conflicts recorded yet.";
+        conflictLogList.appendChild(empty);
+        return;
+    }
+
+    filtered.forEach(entry => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "conflict-log-item";
+        if (normalizedMinute !== null && entry.minute === normalizedMinute) {
+            item.classList.add("is-active");
+        }
+        item.innerHTML = `
+            <span class="conflict-log-time">${formatTime(entry.minute)}</span>
+            <span class="conflict-log-trains">${entry.trains.join(" ↔ ")}</span>
+            <span class="conflict-log-gap">${entry.gapMeters.toFixed(0)} m</span>
+        `;
+        item.addEventListener("click", () => {
+            if (playing) {
+                togglePlay();
+            }
+            const max = Number(timeSlider.max);
+            const targetMinute = Math.min(entry.minute, Number.isFinite(max) ? max : entry.minute);
+            timeSlider.value = targetMinute;
+            render();
+        });
+        conflictLogList.appendChild(item);
+    });
+};
+
+const clearConflictLog = () => {
+    conflictLog.length = 0;
+    conflictLogKeys.clear();
+    if (conflictFilterSelect) {
+        conflictFilterSelect.value = "all";
+    }
+    activeConflictFilter = "all";
+    refreshConflictFilterOptions();
+    renderConflictLog(Math.round(Number(timeSlider.value) || 0));
+};
+
 const render = () => {
     const minutes = Number(timeSlider.value);
     updateTimeLabels();
@@ -682,6 +940,9 @@ const render = () => {
     });
     const positions = calculatePositions(minutes);
     const warnings = checkWarnings(positions);
+    const minuteStamp = Math.max(0, Math.round(minutes));
+    recordConflicts(warnings, minuteStamp);
+    renderConflictLog(minuteStamp);
     const warningIndexes = new Set();
 
     warnings.forEach(w => {
@@ -1098,6 +1359,7 @@ const handleMapUpload = event => {
             }
 
             buildTrack();
+            applyViewportTransform();
             render();
 
             mapStatus.textContent = statusMessage;
@@ -1125,6 +1387,7 @@ const clearMap = () => {
     resetCrossingsToDefault();
     updateTrackPath();
     buildTrack();
+    applyViewportTransform();
     render();
 };
 
@@ -1146,7 +1409,7 @@ const handleTrackLengthChange = () => {
 };
 
 const handleTrackClick = event => {
-    if (!trains.length) {
+    if (!trains.length || isPanning || event.altKey) {
         return;
     }
 
@@ -1155,15 +1418,8 @@ const handleTrackClick = event => {
         return;
     }
 
-    const point = trackSvg.createSVGPoint();
-    point.x = event.clientX;
-    point.y = event.clientY;
-    const matrix = trackSvg.getScreenCTM();
-    if (!matrix) {
-        return;
-    }
-    const svgPoint = point.matrixTransform(matrix.inverse());
-    const normalized = (svgPoint.x - TRACK_PADDING_X) / TRACK_VIEW_WIDTH;
+    const localPoint = getLocalPointFromClient(event.clientX, event.clientY);
+    const normalized = (localPoint.x - TRACK_PADDING_X) / TRACK_VIEW_WIDTH;
     if (normalized < 0 || normalized > 1) {
         return;
     }
@@ -1306,6 +1562,37 @@ trackLengthInput.addEventListener("input", handleTrackLengthChange);
 stationStartInput.addEventListener("input", handleStationInput);
 stationEndInput.addEventListener("input", handleStationInput);
 trackSvg.addEventListener("click", handleTrackClick);
+if (trackSvg) {
+    trackSvg.addEventListener("wheel", handleWheel, { passive: false });
+    trackSvg.addEventListener("pointerdown", handlePointerDown);
+    trackSvg.addEventListener("pointermove", handlePointerMove);
+    trackSvg.addEventListener("pointerup", handlePointerUp);
+    trackSvg.addEventListener("pointercancel", handlePointerUp);
+}
+if (zoomInBtn) {
+    zoomInBtn.addEventListener("click", () => {
+        changeZoom(ZOOM_STEP, getViewportCenterPoint());
+    });
+}
+if (zoomOutBtn) {
+    zoomOutBtn.addEventListener("click", () => {
+        changeZoom(1 / ZOOM_STEP, getViewportCenterPoint());
+    });
+}
+if (zoomResetBtn) {
+    zoomResetBtn.addEventListener("click", resetViewport);
+}
+if (conflictFilterSelect) {
+    conflictFilterSelect.addEventListener("change", () => {
+        activeConflictFilter = conflictFilterSelect.value || "all";
+        renderConflictLog(Math.round(Number(timeSlider.value) || 0));
+    });
+}
+if (conflictClearBtn) {
+    conflictClearBtn.addEventListener("click", () => {
+        clearConflictLog();
+    });
+}
 
 const serializeScenario = () => ({
     version: 1,
@@ -1331,6 +1618,8 @@ const applyScenario = scenario => {
     if (!scenario || typeof scenario !== "object") {
         throw new Error("Scenario payload is invalid.");
     }
+
+    clearConflictLog();
 
     if (Number.isFinite(Number(scenario.trackLengthKm)) && Number(scenario.trackLengthKm) > 0) {
         trackLengthKm = Number(scenario.trackLengthKm);
@@ -1561,6 +1850,7 @@ renderCrossingControls();
 updateTrackLengthSummary();
 renderTrackLabels();
 updateTrackPath();
+applyViewportTransform();
 if (playbackSpeedInput) {
     playbackSpeedInput.value = playbackMultiplier;
 }
